@@ -326,6 +326,25 @@ func CudaMemcpy(val int) attribute.KeyValue {
 	return attribute.Key(attr.CudaMemcpyKind).String(CudaMemcpyName(val))
 }
 
+func CudaMemKindName(val int) string {
+	switch val {
+	case 1:
+		return "device"
+	case 2:
+		return "host"
+	case 3:
+		return "managed"
+	case 4:
+		return "pool"
+	default:
+		return "unknown"
+	}
+}
+
+func CudaMemKind(val int) attribute.KeyValue {
+	return attribute.Key(attr.CudaMemoryKind).String(CudaMemKindName(val))
+}
+
 func Job(val string) attribute.KeyValue {
 	return attribute.Key(attr.MessagingOpType).String(val)
 }

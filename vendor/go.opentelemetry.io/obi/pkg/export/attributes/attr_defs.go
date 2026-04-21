@@ -412,6 +412,43 @@ func getDefinitions(
 				attr.CudaMemcpyKind: true,
 			},
 		},
+		GPUCudaStreamSyncDuration.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{},
+		},
+		GPUCudaDeviceSyncDuration.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{},
+		},
+		GPUCudaEventSyncDuration.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{},
+		},
+		GPUCudaMemoryFrees.Section: {
+			SubGroups: []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{
+				attr.CudaMemoryKind: true,
+			},
+		},
+		GPUCudaMemoryFreeCalls.Section: {
+			SubGroups: []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{
+				attr.CudaMemoryKind: true,
+			},
+		},
+		GPUCudaMemoryMemset.Section: {
+			SubGroups: []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{
+				attr.CudaMemsetAsync: true,
+			},
+		},
+		GPUCudaMemoryPeerCopies.Section: {
+			SubGroups: []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{
+				attr.CudaPeerSrc: true,
+				attr.CudaPeerDst: true,
+			},
+		},
 		DNSLookupDuration.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
