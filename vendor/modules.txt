@@ -920,6 +920,7 @@ go.opentelemetry.io/obi/pkg/internal/ebpf/tpinjector
 go.opentelemetry.io/obi/pkg/internal/ebpf/watcher
 go.opentelemetry.io/obi/pkg/internal/fastelf
 go.opentelemetry.io/obi/pkg/internal/goexec
+go.opentelemetry.io/obi/pkg/internal/hami
 go.opentelemetry.io/obi/pkg/internal/helpers
 go.opentelemetry.io/obi/pkg/internal/helpers/cache
 go.opentelemetry.io/obi/pkg/internal/helpers/container

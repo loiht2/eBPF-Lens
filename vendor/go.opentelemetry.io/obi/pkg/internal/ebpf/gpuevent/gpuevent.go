@@ -25,17 +25,19 @@ import (
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 )
 
-//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -type cuda_kernel_launch_t -type cuda_graph_launch_t -type cuda_malloc_t -type cuda_memcpy_t -type cuda_sync_t -type cuda_free_t -type cuda_memset_t -type cuda_peer_copy_t -target amd64,arm64 Bpf ../../../../bpf/gpuevent/gpuevent.c -- -I../../../../bpf
+//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -type cuda_kernel_launch_t -type cuda_graph_launch_t -type cuda_malloc_t -type cuda_memcpy_t -type cuda_sync_t -type cuda_free_t -type cuda_memset_t -type cuda_peer_copy_t -type cuda_kernel_launch_done_t -type cuda_error_t -target amd64,arm64 Bpf ../../../../bpf/gpuevent/gpuevent.c -- -I../../../../bpf
 
 const (
-	EventTypeKernelLaunch = 1 // EVENT_CUDA_KERNEL_LAUNCH
-	EventTypeMalloc       = 2 // EVENT_CUDA_MALLOC
-	EventTypeMemcpy       = 3 // EVENT_CUDA_MEMCPY
-	EventTypeGraphLaunch  = 4 // EVENT_CUDA_GRAPH_LAUNCH
-	EventTypeSync         = 6 // EVENT_CUDA_SYNC
-	EventTypeFree         = 7 // EVENT_CUDA_FREE
-	EventTypeMemset       = 8 // EVENT_CUDA_MEMSET
-	EventTypePeerCopy     = 9 // EVENT_CUDA_PEER_COPY
+	EventTypeKernelLaunch     = 1  // EVENT_CUDA_KERNEL_LAUNCH
+	EventTypeMalloc           = 2  // EVENT_CUDA_MALLOC
+	EventTypeMemcpy           = 3  // EVENT_CUDA_MEMCPY
+	EventTypeGraphLaunch      = 4  // EVENT_CUDA_GRAPH_LAUNCH
+	EventTypeKernelLaunchDone = 5  // EVENT_CUDA_KERNEL_LAUNCH_DONE
+	EventTypeSync             = 6  // EVENT_CUDA_SYNC
+	EventTypeFree             = 7  // EVENT_CUDA_FREE
+	EventTypeMemset           = 8  // EVENT_CUDA_MEMSET
+	EventTypePeerCopy         = 9  // EVENT_CUDA_PEER_COPY
+	EventTypeError            = 10 // EVENT_CUDA_ERROR
 
 	// Memory kind constants (mirror C #defines)
 	MemKindDevice  = 1
@@ -47,6 +49,18 @@ const (
 	SyncKindStream = 1
 	SyncKindDevice = 2
 	SyncKindEvent  = 3
+
+	// Function ID constants for error events (mirror C #defines)
+	CudaFuncLaunch        = 1
+	CudaFuncCoopLaunch    = 2
+	CudaFuncMalloc        = 3
+	CudaFuncManagedMalloc = 4
+	CudaFuncHostMalloc    = 5
+	CudaFuncHostAlloc     = 6
+	CudaFuncAsyncMalloc   = 7
+	CudaFuncSyncStream    = 8
+	CudaFuncSyncDevice    = 9
+	CudaFuncSyncEvent     = 10
 )
 
 type pidKey struct {
@@ -55,14 +69,16 @@ type pidKey struct {
 }
 
 type (
-	GPUCudaKernelLaunchInfo BpfCudaKernelLaunchT
-	GPUCudaMallocInfo       BpfCudaMallocT
-	GPUCudaMemcpyInfo       BpfCudaMemcpyT
-	GPUCudaGraphLaunchInfo  BpfCudaGraphLaunchT
-	GPUCudaSyncInfo         BpfCudaSyncT
-	GPUCudaFreeInfo         BpfCudaFreeT
-	GPUCudaMemsetInfo       BpfCudaMemsetT
-	GPUCudaPeerCopyInfo     BpfCudaPeerCopyT
+	GPUCudaKernelLaunchInfo     BpfCudaKernelLaunchT
+	GPUCudaMallocInfo           BpfCudaMallocT
+	GPUCudaMemcpyInfo           BpfCudaMemcpyT
+	GPUCudaGraphLaunchInfo      BpfCudaGraphLaunchT
+	GPUCudaSyncInfo             BpfCudaSyncT
+	GPUCudaFreeInfo             BpfCudaFreeT
+	GPUCudaMemsetInfo           BpfCudaMemsetT
+	GPUCudaPeerCopyInfo         BpfCudaPeerCopyT
+	GPUCudaKernelLaunchDoneInfo BpfCudaKernelLaunchDoneT
+	GPUCudaErrorInfo            BpfCudaErrorT
 )
 
 // TODO: We have a way to bring ELF file information to this Tracer struct
@@ -151,81 +167,86 @@ func (p *Tracer) Tracepoints() map[string]ebpfcommon.ProbeDesc {
 
 func (p *Tracer) UProbes() map[string]map[string][]*ebpfcommon.ProbeDesc {
 	return map[string]map[string][]*ebpfcommon.ProbeDesc{
-		"libcudart.so": {
-			// Kernel launches
-			"cudaLaunchKernel": {{
-				Start: p.bpfObjects.ObiCudaLaunch,
+		"libcuda.so": {
+			// Kernel launches (entry emits grid/block info; exit emits duration)
+			"cuLaunchKernel": {{
+				Start: p.bpfObjects.ObiCuLaunch,
+				End:   p.bpfObjects.ObiCuLaunchExit,
 			}},
-			"cudaLaunchCooperativeKernel": {{
-				Start: p.bpfObjects.ObiCudaCoopLaunch,
+			"cuLaunchCooperativeKernel": {{
+				Start: p.bpfObjects.ObiCuCoopLaunch,
+				End:   p.bpfObjects.ObiCuCoopLaunchExit,
 			}},
 			// Graph launches
-			"cudaGraphLaunch": {{
-				Start: p.bpfObjects.ObiGraphLaunch,
+			"cuGraphLaunch": {{
+				Start: p.bpfObjects.ObiCuGraphLaunch,
 			}},
 			// Device memory alloc/free (entry + exit for size tracking)
-			"cudaMalloc": {{
-				Start: p.bpfObjects.ObiCudaMalloc,
-				End:   p.bpfObjects.ObiCudaMallocExit,
+			"cuMemAlloc_v2": {{
+				Start: p.bpfObjects.ObiCuMemAlloc,
+				End:   p.bpfObjects.ObiCuMemAllocExit,
 			}},
-			"cudaMallocManaged": {{
-				Start: p.bpfObjects.ObiCudaManagedMalloc,
-				End:   p.bpfObjects.ObiCudaManagedMallocExit,
+			"cuMemAllocManaged": {{
+				Start: p.bpfObjects.ObiCuMemAllocManaged,
+				End:   p.bpfObjects.ObiCuMemAllocManagedExit,
 			}},
-			"cudaMallocHost": {{
-				Start: p.bpfObjects.ObiCudaHostMalloc,
-				End:   p.bpfObjects.ObiCudaHostMallocExit,
+			"cuMemAllocHost_v2": {{
+				Start: p.bpfObjects.ObiCuMemAllocHost,
+				End:   p.bpfObjects.ObiCuMemAllocHostExit,
 			}},
-			"cudaHostAlloc": {{
-				Start: p.bpfObjects.ObiCudaHostAlloc,
-				End:   p.bpfObjects.ObiCudaHostAllocExit,
+			"cuMemHostAlloc": {{
+				Start: p.bpfObjects.ObiCuMemHostAlloc,
+				End:   p.bpfObjects.ObiCuMemHostAllocExit,
 			}},
-			"cudaMallocAsync": {{
-				Start: p.bpfObjects.ObiCudaAsyncMalloc,
-				End:   p.bpfObjects.ObiCudaAsyncMallocExit,
+			"cuMemAllocAsync": {{
+				Start: p.bpfObjects.ObiCuMemAllocAsync,
+				End:   p.bpfObjects.ObiCuMemAllocAsyncExit,
 			}},
 			// Free probes
-			"cudaFree": {{
-				Start: p.bpfObjects.ObiCudaFree,
+			"cuMemFree_v2": {{
+				Start: p.bpfObjects.ObiCuMemFree,
 			}},
-			"cudaFreeHost": {{
-				Start: p.bpfObjects.ObiCudaFreeHost,
+			"cuMemFreeHost": {{
+				Start: p.bpfObjects.ObiCuMemFreeHost,
 			}},
-			"cudaFreeAsync": {{
-				Start: p.bpfObjects.ObiCudaFreeAsync,
+			"cuMemFreeAsync": {{
+				Start: p.bpfObjects.ObiCuMemFreeAsync,
 			}},
-			// Memcpy probes
-			"cudaMemcpy": {{
-				Start: p.bpfObjects.ObiCudaMemcpy,
+			// Memcpy probes (direction-tagged by function name)
+			"cuMemcpyHtoDAsync_v2": {{
+				Start: p.bpfObjects.ObiCuMemcpyHtod,
 			}},
-			"cudaMemcpyAsync": {{
-				Start: p.bpfObjects.ObiCudaMemcpy,
+			"cuMemcpyDtoHAsync_v2": {{
+				Start: p.bpfObjects.ObiCuMemcpyDtoh,
 			}},
-			"cudaMemcpyPeer": {{
-				Start: p.bpfObjects.ObiCudaPeerMemcpy,
+			"cuMemcpyDtoDAsync_v2": {{
+				Start: p.bpfObjects.ObiCuMemcpyDtod,
 			}},
-			"cudaMemcpyPeerAsync": {{
-				Start: p.bpfObjects.ObiCudaPeerMemcpyAsync,
+			"cuMemcpyPeer": {{
+				Start: p.bpfObjects.ObiCuMemcpyPeer,
+			}},
+			"cuMemcpyPeerAsync": {{
+				Start: p.bpfObjects.ObiCuMemcpyPeerAsync,
 			}},
 			// Memset probes
-			"cudaMemset": {{
-				Start: p.bpfObjects.ObiCudaMemset,
+			"cuMemsetD8_v2": {{
+				Start: p.bpfObjects.ObiCuMemset,
 			}},
-			"cudaMemsetAsync": {{
-				Start: p.bpfObjects.ObiCudaMemsetAsync,
+			"cuMemsetD8Async": {{
+				Start: p.bpfObjects.ObiCuMemsetAsync,
 			}},
 			// Synchronize probes (entry + exit for duration)
-			"cudaStreamSynchronize": {{
-				Start: p.bpfObjects.ObiCudaStreamSyncEntry,
-				End:   p.bpfObjects.ObiCudaStreamSyncExit,
+			"cuStreamSynchronize": {{
+				Start: p.bpfObjects.ObiCuStreamSync,
+				End:   p.bpfObjects.ObiCuStreamSyncExit,
 			}},
-			"cudaDeviceSynchronize": {{
-				Start: p.bpfObjects.ObiCudaDevSyncEntry,
-				End:   p.bpfObjects.ObiCudaDevSyncExit,
+			"cuCtxSynchronize": {{
+				Start: p.bpfObjects.ObiCuCtxSync,
+				End:   p.bpfObjects.ObiCuCtxSyncExit,
 			}},
-			"cudaEventSynchronize": {{
-				Start: p.bpfObjects.ObiCudaEventSyncEntry,
-				End:   p.bpfObjects.ObiCudaEventSyncExit,
+			"cuEventSynchronize": {{
+				Start: p.bpfObjects.ObiCuEventSync,
+				End:   p.bpfObjects.ObiCuEventSyncExit,
 			}},
 		},
 	}
@@ -319,6 +340,10 @@ func (p *Tracer) processCudaEvent(record *ringbuf.Record) (request.Span, bool, e
 		return p.readGPUMemsetIntoSpan(record)
 	case EventTypePeerCopy:
 		return p.readGPUPeerCopyIntoSpan(record)
+	case EventTypeKernelLaunchDone:
+		return p.readGPUKernelLaunchDoneIntoSpan(record)
+	case EventTypeError:
+		return p.readGPUErrorIntoSpan(record)
 	default:
 		p.log.Error("unknown cuda event", "type", eventType)
 	}
@@ -357,7 +382,7 @@ func (p *Tracer) readGPUMemcpyIntoSpan(record *ringbuf.Record) (request.Span, bo
 	return request.Span{
 		Type:          request.EventTypeGPUCudaMemcpy,
 		ContentLength: event.Size,
-		SubType:       int(event.Kind),
+		SubType:       int(event.Direction),
 		Pid: request.PidInfo{
 			HostPID:   app.PID(event.PidInfo.HostPid),
 			UserPID:   app.PID(event.PidInfo.UserPid),
@@ -494,6 +519,54 @@ func (p *Tracer) readGPUPeerCopyIntoSpan(record *ringbuf.Record) (request.Span, 
 		ContentLength: event.Size,
 		// Pack src/dst device IDs: src in high 16 bits, dst in low 16 bits
 		SubType: int(event.SrcDevice)<<16 | int(event.DstDevice)&0xFFFF,
+		Pid: request.PidInfo{
+			HostPID:   app.PID(event.PidInfo.HostPid),
+			UserPID:   app.PID(event.PidInfo.UserPid),
+			Namespace: event.PidInfo.Ns,
+		},
+	}, false, nil
+}
+
+// readGPUKernelLaunchDoneIntoSpan decodes a kernel-launch-done event, providing
+// host-side launch latency (time from cudaLaunchKernel entry to return).
+func (p *Tracer) readGPUKernelLaunchDoneIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
+	event, err := ebpfcommon.ReinterpretCast[GPUCudaKernelLaunchDoneInfo](record.RawSample)
+	if err != nil {
+		return request.Span{}, true, err
+	}
+
+	p.log.Debug("GPU Kernel Launch Done", "duration_ns", event.DurationNs, "retval", event.Retval)
+
+	monoNow := int64(monotime.Now())
+	bpfNow := int64(event.EntryTs) + int64(event.DurationNs)
+	delta := monoNow - bpfNow
+
+	return request.Span{
+		Type:         request.EventTypeGPUCudaKernelLaunchDone,
+		RequestStart: int64(event.EntryTs) + delta,
+		End:          int64(event.EntryTs) + int64(event.DurationNs) + delta,
+		SubType:      int(event.Retval),
+		Pid: request.PidInfo{
+			HostPID:   app.PID(event.PidInfo.HostPid),
+			UserPID:   app.PID(event.PidInfo.UserPid),
+			Namespace: event.PidInfo.Ns,
+		},
+	}, false, nil
+}
+
+// readGPUErrorIntoSpan decodes a CUDA error event (non-zero cudaError_t return value).
+func (p *Tracer) readGPUErrorIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
+	event, err := ebpfcommon.ReinterpretCast[GPUCudaErrorInfo](record.RawSample)
+	if err != nil {
+		return request.Span{}, true, err
+	}
+
+	p.log.Debug("GPU CUDA Error", "func_id", event.FuncId, "error_code", event.ErrorCode)
+
+	return request.Span{
+		Type:          request.EventTypeGPUCudaError,
+		SubType:       int(event.ErrorCode), // cudaError_t value
+		ContentLength: int64(event.FuncId),  // CUDA_FUNC_* identifier → mapped to function name
 		Pid: request.PidInfo{
 			HostPID:   app.PID(event.PidInfo.HostPid),
 			UserPID:   app.PID(event.PidInfo.UserPid),

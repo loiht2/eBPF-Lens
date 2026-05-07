@@ -1,0 +1,83 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: mig-test-gpu
+  namespace: default
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.nvidia.com
+        count: 1
+        selectors:
+        - cel:
+            expression: device.attributes["gpu.nvidia.com"].type == "mig"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mig-cuda-workload
+  namespace: default
+spec:
+  restartPolicy: Never
+  resourceClaims:
+  - name: gpu
+    resourceClaimName: mig-test-gpu
+  containers:
+  - name: cuda
+    image: docker.io/nvidia/cuda:12.3.1-devel-ubuntu22.04
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -e
+      cat > /tmp/workload.cu << 'CUDA_EOF'
+      #include <cuda_runtime.h>
+      #include <stdio.h>
+      #include <unistd.h>
+      #define N 1048576
+      #define BYTES (N * sizeof(float))
+
+      __global__ void vecAdd(float *a, float *b, float *c, int n) {
+          int i = blockIdx.x * blockDim.x + threadIdx.x;
+          if (i < n) c[i] = a[i] + b[i];
+      }
+
+      int main(void) {
+          printf("Starting CUDA workload (eBPF probe test)\n");
+          float *d_a, *d_b, *d_c;
+          cudaMalloc(&d_a, BYTES);
+          cudaMalloc(&d_b, BYTES);
+          cudaMalloc(&d_c, BYTES);
+
+          float *h_a = (float*)malloc(BYTES), *h_b = (float*)malloc(BYTES);
+          for (int i = 0; i < N; i++) { h_a[i] = 1.0f; h_b[i] = 2.0f; }
+
+          cudaStream_t s;
+          cudaStreamCreate(&s);
+
+          cudaMemcpyAsync(d_a, h_a, BYTES, cudaMemcpyHostToDevice, s);
+          cudaMemcpyAsync(d_b, h_b, BYTES, cudaMemcpyHostToDevice, s);
+          cudaStreamSynchronize(s);
+
+          for (int iter = 0; iter < 120; iter++) {
+              vecAdd<<<(N+255)/256, 256, 0, s>>>(d_a, d_b, d_c, N);
+              cudaStreamSynchronize(s);
+              if (iter % 10 == 0) printf("iter %d/120\n", iter);
+              sleep(1);
+          }
+
+          cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+          cudaStreamDestroy(s);
+          free(h_a); free(h_b);
+          printf("Workload complete\n");
+          return 0;
+      }
+      CUDA_EOF
+      nvcc -cudart shared -arch=sm_80 -o /tmp/workload /tmp/workload.cu
+      echo "Compiled OK (dynamic libcudart)"
+      /tmp/workload
+    resources:
+      claims:
+      - name: gpu

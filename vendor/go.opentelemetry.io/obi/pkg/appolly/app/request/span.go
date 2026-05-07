@@ -54,6 +54,8 @@ const (
 	EventTypeGPUCudaFree
 	EventTypeGPUCudaMemset
 	EventTypeGPUCudaPeerCopy
+	EventTypeGPUCudaKernelLaunchDone
+	EventTypeGPUCudaError
 	EventTypeFailedConnect
 	EventTypeDNS
 	EventTypeCouchbaseClient
@@ -161,6 +163,10 @@ func (t EventType) String() string {
 		return "CUDAMemset"
 	case EventTypeGPUCudaPeerCopy:
 		return "CUDAPeerCopy"
+	case EventTypeGPUCudaKernelLaunchDone:
+		return "CUDALaunchKernelDone"
+	case EventTypeGPUCudaError:
+		return "CUDAError"
 	case EventTypeMongoClient:
 		return "MongoClient"
 	case EventTypeManualSpan:
@@ -873,6 +879,13 @@ func spanAttributes(s *Span) SpanAttributes {
 			"size":       strconv.FormatInt(s.ContentLength, 10),
 			"src_device": strconv.Itoa(s.SubType >> 16),
 			"dst_device": strconv.Itoa(s.SubType & 0xFFFF),
+		}
+	case EventTypeGPUCudaKernelLaunchDone:
+		return SpanAttributes{}
+	case EventTypeGPUCudaError:
+		return SpanAttributes{
+			"function":   CudaFuncName(int(s.ContentLength)),
+			"error_code": strconv.Itoa(s.SubType),
 		}
 	case EventTypeMongoClient:
 		return SpanAttributes{

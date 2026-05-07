@@ -255,6 +255,8 @@ const (
 	CudaPeerSrc     = Name("cuda.peer.src")       // source device ID for peer copies
 	CudaPeerDst     = Name("cuda.peer.dst")       // destination device ID for peer copies
 	CudaMemsetAsync = Name("cuda.memset.async")   // true | false
+	CudaFunction    = Name("cuda.function")       // CUDA API function name (e.g. cudaLaunchKernel)
+	CudaErrorCode   = Name("cuda.error.code")     // cudaError_t integer value
 )
 
 // JSON-RPC attributes (current semconv, replacing deprecated rpc.jsonrpc.* attributes)

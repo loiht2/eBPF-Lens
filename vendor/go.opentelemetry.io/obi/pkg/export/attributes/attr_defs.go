@@ -449,6 +449,21 @@ func getDefinitions(
 				attr.CudaPeerDst: true,
 			},
 		},
+		GPUCudaKernelLaunchDuration.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{},
+		},
+		GPUCudaMemoryAllocCalls.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{},
+		},
+		GPUCudaErrors.Section: {
+			SubGroups: []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{
+				attr.CudaFunction:  true,
+				attr.CudaErrorCode: true,
+			},
+		},
 		DNSLookupDuration.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{

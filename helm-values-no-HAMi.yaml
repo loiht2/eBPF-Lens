@@ -1,0 +1,49 @@
+# helm-values.yaml
+
+image:
+  registry: docker.io
+  repository: loihoangthanh1411/ebpf-lens 
+  tag: v0.4-driver-api
+
+# preset: application sets hostPID: true — required for /proc PID discovery
+preset: application
+
+privileged: true
+
+service:
+  enabled: true
+  port: 9400
+
+volumes:
+  # Proc FS — for PID → container → pod mapping
+  - name: proc
+    hostPath:
+      path: /proc
+
+volumeMounts:
+  - name: proc
+    mountPath: /proc
+    readOnly: true
+
+# Schedule only on GPU nodes; tolerate the nvidia.com/gpu taint
+# nodeSelector:
+#   nvidia.com/gpu.present: "true"
+
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+config:
+  data:
+    ebpf:
+      instrument_cuda: "on"
+    prometheus_export:
+      port: 9400
+      path: /metrics
+      instrumentations:
+        - "*"
+      hami_container_dir: "-"
+    attributes:
+      kubernetes:
+        enable: true

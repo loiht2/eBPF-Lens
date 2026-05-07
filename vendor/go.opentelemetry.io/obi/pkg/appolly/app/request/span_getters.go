@@ -259,6 +259,10 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 		getter = func(span *Span) attribute.KeyValue {
 			return attribute.Key(attr.CudaMemsetAsync).Bool(span.SubType != 0)
 		}
+	case attr.CudaFunction:
+		getter = func(span *Span) attribute.KeyValue { return CudaFunction(int(span.ContentLength)) }
+	case attr.CudaErrorCode:
+		getter = func(span *Span) attribute.KeyValue { return CudaErrorCode(span.SubType) }
 	case attr.Job:
 		getter = func(span *Span) attribute.KeyValue { return Job(span.Service.Job()) }
 	case attr.Instance:

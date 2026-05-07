@@ -109,6 +109,9 @@ type MetricsReporter struct {
 	attrGPUMemoryFreeCalls     []attributes.Field[*request.Span, attribute.KeyValue]
 	attrGPUMemoryMemset        []attributes.Field[*request.Span, attribute.KeyValue]
 	attrGPUMemoryPeerCopies    []attributes.Field[*request.Span, attribute.KeyValue]
+	attrGPUKernelLaunchDur     []attributes.Field[*request.Span, attribute.KeyValue]
+	attrGPUMemoryAllocCalls    []attributes.Field[*request.Span, attribute.KeyValue]
+	attrGPUErrors              []attributes.Field[*request.Span, attribute.KeyValue]
 	attrDNSLookupDuration      []attributes.Field[*request.Span, attribute.KeyValue]
 	attrGenAIInputTokenUsage   []attributes.Field[*request.Span, attribute.KeyValue]
 	attrGenAIOutputTokenUsage  []attributes.Field[*request.Span, attribute.KeyValue]
@@ -163,6 +166,9 @@ type Metrics struct {
 	gpuMemoryFreeCalls   *Expirer[*request.Span, instrument.Int64Counter, int64]
 	gpuMemoryMemset      *Expirer[*request.Span, instrument.Float64Histogram, float64]
 	gpuMemoryPeerCopies  *Expirer[*request.Span, instrument.Float64Histogram, float64]
+	gpuKernelLaunchDur   *Expirer[*request.Span, instrument.Float64Histogram, float64]
+	gpuMemoryAllocCalls  *Expirer[*request.Span, instrument.Int64Counter, int64]
+	gpuErrors            *Expirer[*request.Span, instrument.Int64Counter, int64]
 	// dns
 	dnsLookupDuration *Expirer[*request.Span, instrument.Float64Histogram, float64]
 	// genai
@@ -313,6 +319,12 @@ func newMetricsReporter(
 			mr.attrGetters, mr.attributes.For(attributes.GPUCudaMemoryMemset))
 		mr.attrGPUMemoryPeerCopies = attributes.OpenTelemetryGetters(
 			mr.attrGetters, mr.attributes.For(attributes.GPUCudaMemoryPeerCopies))
+		mr.attrGPUKernelLaunchDur = attributes.OpenTelemetryGetters(
+			mr.attrGetters, mr.attributes.For(attributes.GPUCudaKernelLaunchDuration))
+		mr.attrGPUMemoryAllocCalls = attributes.OpenTelemetryGetters(
+			mr.attrGetters, mr.attributes.For(attributes.GPUCudaMemoryAllocCalls))
+		mr.attrGPUErrors = attributes.OpenTelemetryGetters(
+			mr.attrGetters, mr.attributes.For(attributes.GPUCudaErrors))
 	}
 
 	if is.DNSEnabled() {
@@ -638,6 +650,27 @@ func (mr *MetricsReporter) setupOtelMeters(m *Metrics, meter instrument.Meter) e
 		}
 		m.gpuMemoryPeerCopies = NewExpirer[*request.Span, instrument.Float64Histogram, float64](
 			m.ctx, gpuMemoryPeerCopies, mr.attrGPUMemoryPeerCopies, timeNow, mr.cfg.TTL)
+
+		gpuKernelLaunchDur, err := meter.Float64Histogram(attributes.GPUCudaKernelLaunchDuration.OTEL, instrument.WithUnit("s"))
+		if err != nil {
+			return fmt.Errorf("creating gpu kernel launch duration histogram: %w", err)
+		}
+		m.gpuKernelLaunchDur = NewExpirer[*request.Span, instrument.Float64Histogram, float64](
+			m.ctx, gpuKernelLaunchDur, mr.attrGPUKernelLaunchDur, timeNow, mr.cfg.TTL)
+
+		gpuMemoryAllocCalls, err := meter.Int64Counter(attributes.GPUCudaMemoryAllocCalls.OTEL)
+		if err != nil {
+			return fmt.Errorf("creating gpu memory alloc calls counter: %w", err)
+		}
+		m.gpuMemoryAllocCalls = NewExpirer[*request.Span, instrument.Int64Counter, int64](
+			m.ctx, gpuMemoryAllocCalls, mr.attrGPUMemoryAllocCalls, timeNow, mr.cfg.TTL)
+
+		gpuErrors, err := meter.Int64Counter(attributes.GPUCudaErrors.OTEL)
+		if err != nil {
+			return fmt.Errorf("creating gpu errors counter: %w", err)
+		}
+		m.gpuErrors = NewExpirer[*request.Span, instrument.Int64Counter, int64](
+			m.ctx, gpuErrors, mr.attrGPUErrors, timeNow, mr.cfg.TTL)
 	}
 
 	if mr.is.DNSEnabled() {
@@ -1060,6 +1093,8 @@ func (r *Metrics) record(span *request.Span, mr *MetricsReporter) {
 			if mr.is.GPUEnabled() {
 				gmem, attrs := r.gpuMemoryAllocsTotal.ForRecord(span)
 				gmem.Add(ctx, span.ContentLength, instrument.WithAttributeSet(attrs))
+				gcalls, attrs := r.gpuMemoryAllocCalls.ForRecord(span)
+				gcalls.Add(ctx, 1, instrument.WithAttributeSet(attrs))
 			}
 		case request.EventTypeGPUCudaGraphLaunch:
 			if mr.is.GPUEnabled() {
@@ -1104,6 +1139,16 @@ func (r *Metrics) record(span *request.Span, mr *MetricsReporter) {
 			if mr.is.GPUEnabled() {
 				gpeer, attrs := r.gpuMemoryPeerCopies.ForRecord(span)
 				gpeer.Record(ctx, float64(span.ContentLength), instrument.WithAttributeSet(attrs))
+			}
+		case request.EventTypeGPUCudaKernelLaunchDone:
+			if mr.is.GPUEnabled() {
+				gldur, attrs := r.gpuKernelLaunchDur.ForRecord(span)
+				gldur.Record(ctx, duration, instrument.WithAttributeSet(attrs))
+			}
+		case request.EventTypeGPUCudaError:
+			if mr.is.GPUEnabled() {
+				gerr, attrs := r.gpuErrors.ForRecord(span)
+				gerr.Add(ctx, 1, instrument.WithAttributeSet(attrs))
 			}
 		case request.EventTypeDNS:
 			if mr.is.DNSEnabled() {
@@ -1403,6 +1448,9 @@ func (r *Metrics) cleanupAllMetricsInstances() {
 	cleanupCounterMetrics(r.ctx, r.gpuMemoryFreeCalls)
 	cleanupMetrics(r.ctx, r.gpuMemoryMemset)
 	cleanupMetrics(r.ctx, r.gpuMemoryPeerCopies)
+	cleanupMetrics(r.ctx, r.gpuKernelLaunchDur)
+	cleanupCounterMetrics(r.ctx, r.gpuMemoryAllocCalls)
+	cleanupCounterMetrics(r.ctx, r.gpuErrors)
 	cleanupMetrics(r.ctx, r.dnsLookupDuration)
 	cleanupMetrics(r.ctx, r.genAIClientDuration)
 	cleanupMetrics(r.ctx, r.genAIInputTokenUsage)
