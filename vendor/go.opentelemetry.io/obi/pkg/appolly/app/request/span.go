@@ -692,6 +692,10 @@ type Span struct {
 	AWS               *AWS           `json:"-"`
 	GenAI             *GenAI         `json:"-"`
 	JSONRPC           *JSONRPC       `json:"-"`
+	// GPUUuid is the physical GPU UUID observed for this event, populated by the
+	// gpuevent tracer from the HAMi cache poller PID index (only-HAMi) or from
+	// CUDA_VISIBLE_DEVICES in /proc/<pid>/environ (only-MIG). Empty when unknown.
+	GPUUuid           string         `json:"-"`
 
 	// RequestHeaders stores extracted HTTP request headers based on enrichment rules.
 	// Keys are canonical header names, values are all header values (possibly obfuscated).

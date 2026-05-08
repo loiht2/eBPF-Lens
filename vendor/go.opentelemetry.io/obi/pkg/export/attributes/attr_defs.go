@@ -388,78 +388,84 @@ func getDefinitions(
 		},
 		GPUCudaKernelLaunchCalls.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaGraphLaunchCalls.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaKernelGridSize.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaKernelBlockSize.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaMemoryAllocations.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes, &appKubeAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaMemoryCopies.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
+				attr.GPUUuid:        true,
 				attr.CudaMemcpyKind: true,
 			},
 		},
 		GPUCudaStreamSyncDuration.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaDeviceSyncDuration.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaEventSyncDuration.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaMemoryFrees.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
+				attr.GPUUuid:       true,
 				attr.CudaMemoryKind: true,
 			},
 		},
 		GPUCudaMemoryFreeCalls.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
+				attr.GPUUuid:       true,
 				attr.CudaMemoryKind: true,
 			},
 		},
 		GPUCudaMemoryMemset.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
+				attr.GPUUuid:        true,
 				attr.CudaMemsetAsync: true,
 			},
 		},
 		GPUCudaMemoryPeerCopies.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
+				attr.GPUUuid:    true,
 				attr.CudaPeerSrc: true,
 				attr.CudaPeerDst: true,
 			},
 		},
 		GPUCudaKernelLaunchDuration.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaMemoryAllocCalls.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		GPUCudaErrors.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
+				attr.GPUUuid:       true,
 				attr.CudaFunction:  true,
 				attr.CudaErrorCode: true,
 			},
@@ -467,14 +473,15 @@ func getDefinitions(
 		GPUHamiOOMEvents.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
-				attr.CudaFunction:      true,
-				attr.HamiOOMMemKind:    true,
-				attr.HamiOOMErrorCode:  true,
+				attr.GPUUuid:         true,
+				attr.CudaFunction:    true,
+				attr.HamiOOMMemKind:  true,
+				attr.HamiOOMErrorCode: true,
 			},
 		},
 		GPUHamiThrottleDuration.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes},
-			Attributes: map[attr.Name]Default{},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
 		DNSLookupDuration.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},

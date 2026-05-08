@@ -1031,6 +1031,8 @@ func newReporter(
 			mr.cudaKernelLaunchDur,
 			mr.cudaMemoryAllocCalls,
 			mr.cudaErrors,
+			mr.hamiOOMEvents,
+			mr.hamiThrottleDuration,
 		)
 	}
 

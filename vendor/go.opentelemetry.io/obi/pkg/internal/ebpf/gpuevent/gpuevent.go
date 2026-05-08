@@ -4,10 +4,14 @@
 package gpuevent // import "go.opentelemetry.io/obi/pkg/internal/ebpf/gpuevent"
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -21,6 +25,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/export/imetrics"
 	"go.opentelemetry.io/obi/pkg/internal/ebpf/ringbuf"
 	"go.opentelemetry.io/obi/pkg/internal/goexec"
+	"go.opentelemetry.io/obi/pkg/internal/hami"
 	"go.opentelemetry.io/obi/pkg/obi"
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 )
@@ -99,6 +104,10 @@ type Tracer struct {
 	instrumentedLibs ebpfcommon.InstrumentedLibsT
 	libsMux          sync.Mutex
 	pidMap           map[pidKey]uint64
+	// gpuUUIDCache caches the GPU UUID resolved from /proc/<pid>/environ per host PID.
+	// Used as the MIG-mode fallback when the HAMi PIDIndex has no entry for this PID.
+	// Entries are populated lazily on first event for each PID and evicted in BlockPID.
+	gpuUUIDCache sync.Map // map[int32]string
 }
 
 func New(pidFilter ebpfcommon.ServiceFilter, cfg *obi.Config, metrics imetrics.Reporter) *Tracer {
@@ -123,6 +132,96 @@ func (p *Tracer) AllowPID(pid app.PID, ns uint32, svc *svc.Attrs) {
 
 func (p *Tracer) BlockPID(pid app.PID, ns uint32) {
 	p.pidsFilter.BlockPID(pid, ns)
+	p.gpuUUIDCache.Delete(int32(pid))
+}
+
+// withGPUUUID enriches a span with the physical GPU UUID for its PID.
+// Resolution order (all results are cached in gpuUUIDCache per host PID):
+//  1. HAMi PIDIndex (device-plugin mode): populated by cache poller every ~1 s.
+//     Only works when libvgpu.so records the real host PID as hostpid in the cache.
+//  2. CUDA_DEVICE_MEMORY_SHARED_CACHE env var (HAMi DRA mode): read the cache file
+//     pointed to by the env var and return sr.uuids[0].
+//  3. NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES with MIG- prefix (only-MIG mode).
+//
+// Returns the span unchanged when all sources return empty.
+func (p *Tracer) withGPUUUID(span request.Span) request.Span {
+	hostPID := int32(span.Pid.HostPID)
+
+	// 1. HAMi PIDIndex (fast path; populated by poller for device-plugin mode)
+	if uuid := hami.DefaultPIDIndex().LookupUUID(hostPID); uuid != "" {
+		span.GPUUuid = uuid
+		return span
+	}
+
+	// 2+3. /proc/environ: try HAMi DRA cache file, then MIG env var (one read, cached)
+	if v, ok := p.gpuUUIDCache.Load(hostPID); ok {
+		span.GPUUuid = v.(string)
+		return span
+	}
+	uuid := resolveGPUUUIDFromProc(hostPID)
+	p.gpuUUIDCache.Store(hostPID, uuid)
+	span.GPUUuid = uuid
+	return span
+}
+
+// resolveGPUUUIDFromProc reads /proc/<pid>/environ once and resolves the GPU UUID via:
+//  a. CUDA_DEVICE_MEMORY_SHARED_CACHE (HAMi DRA): open the cache file, return sr.uuids[0].
+//  b. CUDA_VISIBLE_DEVICES / NVIDIA_VISIBLE_DEVICES with "MIG-" prefix (only-MIG).
+func resolveGPUUUIDFromProc(pid int32) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		return ""
+	}
+	var cachePath, visDevices string
+	for _, entry := range bytes.Split(data, []byte{0}) {
+		kv := bytes.SplitN(entry, []byte{'='}, 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch string(kv[0]) {
+		case "CUDA_DEVICE_MEMORY_SHARED_CACHE":
+			cachePath = strings.TrimSpace(string(kv[1]))
+		case "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES":
+			val := strings.TrimSpace(string(kv[1]))
+			if val != "" && val != "void" && val != "NoDevFiles" {
+				visDevices = val
+			}
+		}
+	}
+
+	// HAMi DRA: read UUID from the cache file (most reliable source)
+	if cachePath != "" {
+		if uuid := readUUIDFromCacheFile(cachePath); uuid != "" {
+			return uuid
+		}
+	}
+
+	// only-MIG: NVIDIA DRA injects "MIG-<uuid>" into NVIDIA_VISIBLE_DEVICES.
+	if visDevices != "" {
+		return strings.TrimPrefix(visDevices, "MIG-")
+	}
+	return ""
+}
+
+// readUUIDFromCacheFile opens a HAMi cudevshr.cache file and returns the GPU UUID
+// for device 0 (sr.uuids[0]).
+//
+// The agent container may not have the HAMi cache directory mounted as a volume.
+// With hostPID=true + privileged=true the host filesystem is reachable via
+// /proc/1/root/<path>, so we try both the direct path and the /proc/1/root prefix.
+func readUUIDFromCacheFile(path string) string {
+	for _, prefix := range []string{"", "/proc/1/root"} {
+		sr, err := hami.OpenSharedRegion(prefix + path)
+		if err != nil {
+			continue
+		}
+		sample := sr.Snapshot("", "")
+		sr.Close()
+		if len(sample.Devices) > 0 && sample.Devices[0].UUID != "" {
+			return sample.Devices[0].UUID
+		}
+	}
+	return ""
 }
 
 func (p *Tracer) LoadSpecs() ([]*ebpfcommon.SpecBundle, error) {
@@ -398,7 +497,7 @@ func (p *Tracer) readGPUMallocIntoSpan(record *ringbuf.Record) (request.Span, bo
 
 	p.log.Debug("GPU Malloc", "event", event)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaMalloc,
 		ContentLength: event.Size,
 		SubType:       int(event.MemKind),
@@ -407,7 +506,7 @@ func (p *Tracer) readGPUMallocIntoSpan(record *ringbuf.Record) (request.Span, bo
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) readGPUMemcpyIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
@@ -418,7 +517,7 @@ func (p *Tracer) readGPUMemcpyIntoSpan(record *ringbuf.Record) (request.Span, bo
 
 	p.log.Debug("GPU Memcpy", "event", event)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaMemcpy,
 		ContentLength: event.Size,
 		SubType:       int(event.Direction),
@@ -427,7 +526,7 @@ func (p *Tracer) readGPUMemcpyIntoSpan(record *ringbuf.Record) (request.Span, bo
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) readGPUKernelLaunchIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
@@ -438,7 +537,7 @@ func (p *Tracer) readGPUKernelLaunchIntoSpan(record *ringbuf.Record) (request.Sp
 
 	p.log.Debug("GPU Kernel Launch", "event", event)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaKernelLaunch,
 		ContentLength: int64(event.GridX * event.GridY * event.GridZ),
 		SubType:       int(event.BlockX * event.BlockY * event.BlockZ),
@@ -447,7 +546,7 @@ func (p *Tracer) readGPUKernelLaunchIntoSpan(record *ringbuf.Record) (request.Sp
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) readGPUGraphLaunchIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
@@ -458,14 +557,14 @@ func (p *Tracer) readGPUGraphLaunchIntoSpan(record *ringbuf.Record) (request.Spa
 
 	p.log.Debug("GPU Graph Launch", "event", event)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type: request.EventTypeGPUCudaGraphLaunch,
 		Pid: request.PidInfo{
 			HostPID:   app.PID(event.PidInfo.HostPid),
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 // readGPUSyncIntoSpan decodes a synchronize event and stores timing so Timings() yields duration.
@@ -493,7 +592,7 @@ func (p *Tracer) readGPUSyncIntoSpan(record *ringbuf.Record) (request.Span, bool
 		eventType = request.EventTypeGPUCudaEventSync
 	}
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:         eventType,
 		RequestStart: int64(event.EntryTs) + delta,
 		End:          int64(event.EntryTs) + int64(event.DurationNs) + delta,
@@ -502,7 +601,7 @@ func (p *Tracer) readGPUSyncIntoSpan(record *ringbuf.Record) (request.Span, bool
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) readGPUFreeIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
@@ -513,7 +612,7 @@ func (p *Tracer) readGPUFreeIntoSpan(record *ringbuf.Record) (request.Span, bool
 
 	p.log.Debug("GPU Free", "kind", event.MemKind, "size", event.Size)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaFree,
 		ContentLength: event.Size,
 		SubType:       int(event.MemKind),
@@ -522,7 +621,7 @@ func (p *Tracer) readGPUFreeIntoSpan(record *ringbuf.Record) (request.Span, bool
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) readGPUMemsetIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
@@ -533,7 +632,7 @@ func (p *Tracer) readGPUMemsetIntoSpan(record *ringbuf.Record) (request.Span, bo
 
 	p.log.Debug("GPU Memset", "async", event.IsAsync, "size", event.Size)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaMemset,
 		ContentLength: event.Size,
 		SubType:       int(event.IsAsync),
@@ -542,7 +641,7 @@ func (p *Tracer) readGPUMemsetIntoSpan(record *ringbuf.Record) (request.Span, bo
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) readGPUPeerCopyIntoSpan(record *ringbuf.Record) (request.Span, bool, error) {
@@ -553,7 +652,7 @@ func (p *Tracer) readGPUPeerCopyIntoSpan(record *ringbuf.Record) (request.Span, 
 
 	p.log.Debug("GPU Peer Copy", "src", event.SrcDevice, "dst", event.DstDevice, "size", event.Size)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaPeerCopy,
 		ContentLength: event.Size,
 		// Pack src/dst device IDs: src in high 16 bits, dst in low 16 bits
@@ -563,7 +662,7 @@ func (p *Tracer) readGPUPeerCopyIntoSpan(record *ringbuf.Record) (request.Span, 
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 // readGPUKernelLaunchDoneIntoSpan decodes a kernel-launch-done event, providing
@@ -580,7 +679,7 @@ func (p *Tracer) readGPUKernelLaunchDoneIntoSpan(record *ringbuf.Record) (reques
 	bpfNow := int64(event.EntryTs) + int64(event.DurationNs)
 	delta := monoNow - bpfNow
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:         request.EventTypeGPUCudaKernelLaunchDone,
 		RequestStart: int64(event.EntryTs) + delta,
 		End:          int64(event.EntryTs) + int64(event.DurationNs) + delta,
@@ -590,7 +689,7 @@ func (p *Tracer) readGPUKernelLaunchDoneIntoSpan(record *ringbuf.Record) (reques
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 // readGPUErrorIntoSpan decodes a CUDA error event (non-zero cudaError_t return value).
@@ -602,7 +701,7 @@ func (p *Tracer) readGPUErrorIntoSpan(record *ringbuf.Record) (request.Span, boo
 
 	p.log.Debug("GPU CUDA Error", "func_id", event.FuncId, "error_code", event.ErrorCode)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUCudaError,
 		SubType:       int(event.ErrorCode), // cudaError_t value
 		ContentLength: int64(event.FuncId),  // CUDA_FUNC_* identifier → mapped to function name
@@ -611,7 +710,7 @@ func (p *Tracer) readGPUErrorIntoSpan(record *ringbuf.Record) (request.Span, boo
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 // readGPUHamiOOMIntoSpan decodes a HAMi quota-OOM event from libvgpu.so.
@@ -625,7 +724,7 @@ func (p *Tracer) readGPUHamiOOMIntoSpan(record *ringbuf.Record) (request.Span, b
 
 	p.log.Debug("HAMi OOM", "func_id", event.CudaFuncId, "mem_kind", event.MemKind, "rc", event.Rc)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:          request.EventTypeGPUHamiOOM,
 		SubType:       (int(event.MemKind) << 24) | int(event.Rc),
 		ContentLength: int64(event.CudaFuncId),
@@ -634,7 +733,7 @@ func (p *Tracer) readGPUHamiOOMIntoSpan(record *ringbuf.Record) (request.Span, b
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 // readGPUHamiThrottleIntoSpan decodes a HAMi compute-throttle event.
@@ -653,7 +752,7 @@ func (p *Tracer) readGPUHamiThrottleIntoSpan(record *ringbuf.Record) (request.Sp
 	end := monoNow
 	start := end - int64(event.DurationNs)
 
-	return request.Span{
+	return p.withGPUUUID(request.Span{
 		Type:         request.EventTypeGPUHamiThrottle,
 		RequestStart: start,
 		End:          end,
@@ -662,7 +761,7 @@ func (p *Tracer) readGPUHamiThrottleIntoSpan(record *ringbuf.Record) (request.Sp
 			UserPID:   app.PID(event.PidInfo.UserPid),
 			Namespace: event.PidInfo.Ns,
 		},
-	}, false, nil
+	}), false, nil
 }
 
 func (p *Tracer) SetEventContext(_ *ebpfcommon.EBPFEventContext) {}

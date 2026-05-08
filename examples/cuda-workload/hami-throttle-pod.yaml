@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-throttle-train
+  namespace: test
+  labels:
+    job-type: training
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== hami-throttle-train started ===" && date
+          echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          ITERATIONS = int(os.getenv("CUDA_TEST_ITERS", "200"))
+          SLEEP_SECONDS = float(os.getenv("CUDA_TEST_SLEEP", "0.5"))
+          MATRIX_SIZE = int(os.getenv("CUDA_TEST_MATRIX_SIZE", "4096"))
+          DRIVER_BYTES = int(os.getenv("CUDA_DRIVER_BYTES", str(256 * 1024 * 1024)))
+          ENABLE_INTENTIONAL_CUDA_ERROR = os.getenv("ENABLE_INTENTIONAL_CUDA_ERROR", "0") == "1"
+
+          CUDA_SUCCESS = 0
+          CUdevice = ctypes.c_int
+          CUcontext = ctypes.c_void_p
+          CUstream = ctypes.c_void_p
+          CUevent = ctypes.c_void_p
+          CUdeviceptr = ctypes.c_uint64
+          CUresult = ctypes.c_int
+
+          def load_libcuda():
+              for name in ("libcuda.so.1", "libcuda.so"):
+                  try: return ctypes.CDLL(name)
+                  except OSError: pass
+              return None
+
+          class CudaDriver:
+              def __init__(self):
+                  self.cuda = load_libcuda()
+                  self.funcs = {}
+                  if self.cuda is None:
+                      print("libcuda not found", flush=True); return
+                  self._bind_all()
+              def _bind(self, name, argtypes):
+                  try: fn = getattr(self.cuda, name)
+                  except AttributeError: return None
+                  fn.restype = CUresult; fn.argtypes = argtypes
+                  self.funcs[name] = fn; return fn
+              def _bind_all(self):
+                  self._bind("cuGetErrorName", [CUresult, ctypes.POINTER(ctypes.c_char_p)])
+                  self._bind("cuInit", [ctypes.c_uint])
+                  self._bind("cuDeviceGetCount", [ctypes.POINTER(ctypes.c_int)])
+                  self._bind("cuDeviceGet", [ctypes.POINTER(CUdevice), ctypes.c_int])
+                  self._bind("cuCtxGetCurrent", [ctypes.POINTER(CUcontext)])
+                  self._bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])
+                  self._bind("cuCtxSynchronize", [])
+                  self._bind("cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])
+                  self._bind("cuStreamSynchronize", [CUstream])
+                  self._bind("cuStreamDestroy_v2", [CUstream])
+                  self._bind("cuEventCreate", [ctypes.POINTER(CUevent), ctypes.c_uint])
+                  self._bind("cuEventRecord", [CUevent, CUstream])
+                  self._bind("cuEventSynchronize", [CUevent])
+                  self._bind("cuEventDestroy_v2", [CUevent])
+                  self._bind("cuMemAlloc_v2", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+                  self._bind("cuMemAllocManaged", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, ctypes.c_uint])
+                  self._bind("cuMemAllocHost_v2", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t])
+                  self._bind("cuMemHostAlloc", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint])
+                  self._bind("cuMemAllocAsync", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+                  self._bind("cuMemFree_v2", [CUdeviceptr])
+                  self._bind("cuMemFreeHost", [ctypes.c_void_p])
+                  self._bind("cuMemFreeAsync", [CUdeviceptr, CUstream])
+                  self._bind("cuMemcpyHtoDAsync_v2", [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t, CUstream])
+                  self._bind("cuMemcpyDtoHAsync_v2", [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t, CUstream])
+                  self._bind("cuMemcpyDtoDAsync_v2", [CUdeviceptr, CUdeviceptr, ctypes.c_size_t, CUstream])
+                  self._bind("cuMemsetD8_v2", [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t])
+                  self._bind("cuMemsetD8Async", [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t, CUstream])
+              def available(self): return self.cuda is not None
+              def call(self, name, *args, fatal=False):
+                  fn = self.funcs.get(name)
+                  if fn is None: return None
+                  rc = fn(*args)
+                  if rc != CUDA_SUCCESS:
+                      print(f"{name} rc={rc}", flush=True)
+                      if fatal: raise RuntimeError(f"{name} failed rc={rc}")
+                  return rc
+              def ensure_context(self):
+                  if not self.available(): return False
+                  self.call("cuInit", 0, fatal=True)
+                  count = ctypes.c_int(0)
+                  self.call("cuDeviceGetCount", ctypes.byref(count), fatal=True)
+                  print(f"driver cuda device count: {count.value}", flush=True)
+                  if count.value < 1: return False
+                  ctx = CUcontext()
+                  self.call("cuCtxGetCurrent", ctypes.byref(ctx), fatal=True)
+                  if not ctx.value:
+                      dev = CUdevice(0)
+                      self.call("cuDeviceGet", ctypes.byref(dev), 0, fatal=True)
+                      self.call("cuCtxCreate_v2", ctypes.byref(ctx), 0, dev, fatal=True)
+                      print("created CUDA driver context", flush=True)
+                  return True
+              def exercise_once(self, nbytes, emit_error=False):
+                  stream = CUstream(); event = CUevent()
+                  d_a = CUdeviceptr(0); d_b = CUdeviceptr(0)
+                  d_managed = CUdeviceptr(0); d_async = CUdeviceptr(0)
+                  h_a = ctypes.c_void_p(); h_b = ctypes.c_void_p()
+                  ctx = CUcontext()
+                  try:
+                      self.call("cuCtxGetCurrent", ctypes.byref(ctx))
+                      self.call("cuStreamCreate", ctypes.byref(stream), 0)
+                      self.call("cuEventCreate", ctypes.byref(event), 0)
+                      self.call("cuMemAlloc_v2", ctypes.byref(d_a), nbytes)
+                      self.call("cuMemAlloc_v2", ctypes.byref(d_b), nbytes)
+                      self.call("cuMemAllocManaged", ctypes.byref(d_managed), nbytes, 1)
+                      self.call("cuMemAllocHost_v2", ctypes.byref(h_a), nbytes)
+                      self.call("cuMemHostAlloc", ctypes.byref(h_b), nbytes, 0)
+                      if stream.value: self.call("cuMemAllocAsync", ctypes.byref(d_async), nbytes, stream)
+                      if d_a.value: self.call("cuMemsetD8_v2", d_a, 0, nbytes)
+                      if d_a.value and h_a.value and stream.value:
+                          self.call("cuMemcpyHtoDAsync_v2", d_a, h_a, nbytes, stream)
+                          self.call("cuMemcpyDtoHAsync_v2", h_b, d_a, nbytes, stream)
+                      if d_a.value and d_b.value and stream.value:
+                          self.call("cuMemcpyDtoDAsync_v2", d_b, d_a, nbytes, stream)
+                      if event.value and stream.value:
+                          self.call("cuEventRecord", event, stream)
+                          self.call("cuEventSynchronize", event)
+                      if stream.value: self.call("cuStreamSynchronize", stream)
+                      self.call("cuCtxSynchronize")
+                      if emit_error:
+                          bad = CUdeviceptr(0)
+                          self.call("cuMemAlloc_v2", ctypes.byref(bad), ctypes.c_size_t((1 << 63) - 1))
+                          if bad.value: self.call("cuMemFree_v2", bad)
+                  finally:
+                      if d_async.value and stream.value:
+                          self.call("cuMemFreeAsync", d_async, stream)
+                          self.call("cuStreamSynchronize", stream)
+                      if d_managed.value: self.call("cuMemFree_v2", d_managed)
+                      if d_b.value: self.call("cuMemFree_v2", d_b)
+                      if d_a.value: self.call("cuMemFree_v2", d_a)
+                      if h_b.value: self.call("cuMemFreeHost", h_b)
+                      if h_a.value: self.call("cuMemFreeHost", h_a)
+                      if event.value: self.call("cuEventDestroy_v2", event)
+                      if stream.value: self.call("cuStreamDestroy_v2", stream)
+
+          def main():
+              print(f"ITERS={ITERATIONS} SLEEP={SLEEP_SECONDS} SIZE={MATRIX_SIZE} BYTES={DRIVER_BYTES} ERR={int(ENABLE_INTENTIONAL_CUDA_ERROR)}", flush=True)
+              try:
+                  import torch
+                  print(f"torch={torch.__version__} cuda={torch.cuda.is_available()}", flush=True)
+                  if not torch.cuda.is_available():
+                      for i in range(ITERATIONS):
+                          print(f"step={i} no-cuda", flush=True); time.sleep(SLEEP_SECONDS)
+                      return
+                  torch.cuda.set_device(0); torch.cuda.init()
+                  torch.empty(1, device="cuda")
+                  driver = CudaDriver(); driver_ready = driver.ensure_context()
+                  x = torch.randn(MATRIX_SIZE, MATRIX_SIZE, device="cuda")
+                  y = torch.randn(MATRIX_SIZE, MATRIX_SIZE, device="cuda")
+                  for i in range(ITERATIONS):
+                      if driver_ready:
+                          driver.exercise_once(DRIVER_BYTES, emit_error=(ENABLE_INTENTIONAL_CUDA_ERROR and i == 5))
+                      z = torch.relu(x @ y)
+                      torch.cuda.current_stream().synchronize()
+                      torch.cuda.synchronize()
+                      print(f"step={i} mean={z.mean().item():.4f}", flush=True)
+                      time.sleep(SLEEP_SECONDS)
+              except Exception as exc:
+                  traceback.print_exc()
+                  for i in range(ITERATIONS):
+                      print(f"fallback step={i}", flush=True); time.sleep(SLEEP_SECONDS)
+              finally:
+                  print("=== finished ===", flush=True)
+
+          if __name__ == "__main__": main()
+          PY
+      env:
+        # Workload sizing — test with existing claim: cores=60, memory=2590Mi
+        - name: CUDA_TEST_ITERS
+          value: "200"
+        - name: CUDA_TEST_SLEEP
+          value: "0.5"
+        - name: CUDA_TEST_MATRIX_SIZE
+          value: "4096"
+        # 256 MiB per driver alloc; 3 device allocs per step = 768 MiB peak device footprint.
+        # Stays under the 2590Mi quota; frees each step so no natural OOM accumulation.
+        - name: CUDA_DRIVER_BYTES
+          value: "268435456"
+        # Real quota OOM comes from HAMi denying cuMemAlloc_v2; 0 means no synthetic overflow.
+        - name: ENABLE_INTENTIONAL_CUDA_ERROR
+          value: "0"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: single-gpu-0
