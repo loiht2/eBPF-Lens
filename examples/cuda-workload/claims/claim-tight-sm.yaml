@@ -1,0 +1,20 @@
+# claim-tight-sm.yaml — template ResourceClaim for plan-6 scenario S5 (throttle-burst)
+# Low SM quota forces libvgpu rate_limiter() to stall every kernel launch.
+# Copy and rename (metadata.name) per scenario before applying.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: claim-tight-sm      # override per scenario
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "20"     # 20% SM — forces ~80% throttle rate
+            memory: 2590Mi

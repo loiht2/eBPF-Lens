@@ -402,6 +402,14 @@ func getDefinitions(
 			SubGroups:  []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
 		},
+		GPUCudaKernelSharedMemoryBytes.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
+		},
+		GPUCudaEventElapsedDuration.Section: {
+			SubGroups:  []*AttrReportGroup{&appAttributes},
+			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
+		},
 		GPUCudaMemoryAllocations.Section: {
 			SubGroups:  []*AttrReportGroup{&appAttributes, &appKubeAttributes},
 			Attributes: map[attr.Name]Default{attr.GPUUuid: true},
@@ -446,12 +454,15 @@ func getDefinitions(
 				attr.CudaMemsetAsync: true,
 			},
 		},
+		// Peer-copy src/dst device IDs are NOT exposed: the BPF probes on
+		// cuMemcpyPeer / cuMemcpyPeerAsync receive opaque CUcontext handles
+		// (not device ordinals), and resolving context → device requires
+		// CUDA Runtime context-tracking that is not available from eBPF.
+		// See .obi-src/bpf/gpuevent/cuda.c (obi_cu_memcpy_peer*).
 		GPUCudaMemoryPeerCopies.Section: {
 			SubGroups: []*AttrReportGroup{&appAttributes},
 			Attributes: map[attr.Name]Default{
-				attr.GPUUuid:    true,
-				attr.CudaPeerSrc: true,
-				attr.CudaPeerDst: true,
+				attr.GPUUuid: true,
 			},
 		},
 		GPUCudaKernelLaunchDuration.Section: {

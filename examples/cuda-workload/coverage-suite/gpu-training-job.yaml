@@ -1,0 +1,85 @@
+# gpu-training-job — continuous PyTorch training-style workload.
+# Covers: kernel launch rate + latency, allocations (alloc rate, calls, avg size),
+#         frees, memcpy H2D/D2H/D2D, memset.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-training-claim
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "50"
+            memory: 2048Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-training-job
+  namespace: qa-mp
+  labels:
+    suite: coverage-v0.12
+    workload: training
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DURATION_SEC
+          value: "900"
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== gpu-training-job ===" && date
+          python - <<'PY'
+          import os, time, torch
+
+          DURATION = int(os.getenv("DURATION_SEC", "300"))
+          MATRIX   = 2048
+
+          torch.cuda.set_device(0)
+          torch.cuda.init()
+          torch.empty(1, device="cuda")  # eagerly init context
+
+          device = torch.device("cuda")
+          # Persistent buffers — drives D2D memcpy + kernel launches per step
+          a = torch.randn(MATRIX, MATRIX, device=device)
+          b = torch.randn(MATRIX, MATRIX, device=device)
+          c = torch.empty(MATRIX, MATRIX, device=device)
+
+          end_at = time.monotonic() + DURATION
+          step = 0
+          while time.monotonic() < end_at:
+              # Kernels + intermediate allocs
+              x = torch.randn(MATRIX, MATRIX, device=device)    # alloc + memset
+              c = torch.relu(a @ b + x)                          # kernels
+              # Explicit H2D / D2H to drive memcpy panel
+              h = c.detach().cpu()                               # D2H
+              h2 = h.cuda(non_blocking=True)                     # H2D
+              # Zero a temp buffer (memset)
+              tmp = torch.zeros(MATRIX, MATRIX, device=device)  # alloc + memset_async
+              # Free temporaries
+              del x, h, h2, tmp
+              torch.cuda.synchronize()
+              step += 1
+              if step % 50 == 0:
+                  print(f"step={step}  elapsed={time.monotonic()-(end_at-DURATION):.1f}s", flush=True)
+              time.sleep(0.05)
+          print(f"=== training done  steps={step} ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: gpu-training-claim

@@ -1,0 +1,153 @@
+# Plan-6 S3 — CUDA error variety
+# Targets: gpu_cuda_errors_total with >= 2 distinct (cuda_function, cuda_error_code) tuples.
+#
+# Triggers (all safe under HAMi DRA — no destroyed-handle calls):
+#   T1: cuLaunchKernel(NULL, grid=1,1,1,  block=1,1,1)  → rc=400 (INVALID_HANDLE)  PROVEN
+#   T2: cuLaunchKernel(NULL, grid=0,1,1,  block=1,1,1)  → rc=1   (INVALID_VALUE) or 400
+#   T3: cuLaunchKernel(NULL, grid=1,1,1,  block=0,1,1)  → rc=1   (INVALID_VALUE) or 400
+#   T4: cuLaunchCooperativeKernel(NULL, …)               → rc=400 (different function name)
+#
+# HAMi note: calls that HAMi intercepts *before* libcuda (quota-denied OOM) do NOT fire
+# gpu_cuda_errors_total; they fire gpu_hami_oom_events_total instead (see S4).
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s3-gpu
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "60"
+            memory: 2590Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-cuda-errors
+  namespace: qa-mp
+  labels:
+    plan: "6"
+    scenario: s3
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s3-cuda-errors ===" && date
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          REPS = int(os.getenv("ERROR_REPS", "10"))  # repetitions per trigger
+
+          CUDA_SUCCESS = 0
+          CUdevice = ctypes.c_int; CUcontext = ctypes.c_void_p
+          CUstream = ctypes.c_void_p; CUresult = ctypes.c_int
+
+          def load_libcuda():
+              for n in ("libcuda.so.1", "libcuda.so"):
+                  try: return ctypes.CDLL(n)
+                  except OSError: pass
+              return None
+
+          def bind(cu, name, argtypes, restype=None):
+              try: fn = getattr(cu, name)
+              except AttributeError: return None
+              fn.restype = restype or CUresult; fn.argtypes = argtypes; return fn
+
+          def main():
+              cu = load_libcuda()
+              if not cu: print("no libcuda", flush=True); return
+
+              bind(cu, "cuInit", [ctypes.c_uint])(0)
+              count = ctypes.c_int(0)
+              bind(cu, "cuDeviceGetCount", [ctypes.POINTER(ctypes.c_int)])(ctypes.byref(count))
+              if count.value < 1: print("no CUDA device", flush=True); return
+              ctx = CUcontext()
+              bind(cu, "cuCtxGetCurrent", [ctypes.POINTER(CUcontext)])(ctypes.byref(ctx))
+              if not ctx.value:
+                  dev = CUdevice(0)
+                  bind(cu, "cuDeviceGet",   [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+                  bind(cu, "cuCtxCreate_v2",[ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+              print(f"CUDA init ok  REPS={REPS}", flush=True)
+              WARMUP = int(os.getenv("WARMUP_SLEEP", "15"))
+              print(f"warmup sleep {WARMUP}s ...", flush=True); time.sleep(WARMUP)
+
+              # ── T1: cuLaunchKernel(NULL func, grid=1,1,1, block=1,1,1) ───
+              # PROVEN: HAMi passes NULL through; libcuda returns 400 (INVALID_HANDLE).
+              _launch = bind(cu, "cuLaunchKernel", [
+                  ctypes.c_void_p,                      # CUfunction (NULL)
+                  ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,  # gridDim
+                  ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,  # blockDim
+                  ctypes.c_uint,                        # sharedMemBytes
+                  CUstream,                             # hStream
+                  ctypes.c_void_p,                      # kernelParams (NULL)
+                  ctypes.c_void_p,                      # extra (NULL)
+              ])
+              if _launch:
+                  for i in range(REPS):
+                      rc = _launch(None, 1,1,1, 1,1,1, 0, CUstream(0), None, None)
+                      if i == 0: print(f"T1 cuLaunchKernel(NULL,1,1,1,1,1,1) rc={rc}", flush=True)
+
+              # ── T2: cuLaunchKernel(NULL func, grid=0,1,1) ─────────────────
+              # grid with xDim=0 is INVALID_VALUE in libcuda, may give rc=1 or 400.
+              if _launch:
+                  for i in range(REPS):
+                      rc = _launch(None, 0,1,1, 1,1,1, 0, CUstream(0), None, None)
+                      if i == 0: print(f"T2 cuLaunchKernel(NULL,0,1,1,...) rc={rc}", flush=True)
+
+              # ── T3: cuLaunchKernel(NULL func, block=0,1,1) ────────────────
+              if _launch:
+                  for i in range(REPS):
+                      rc = _launch(None, 1,1,1, 0,1,1, 0, CUstream(0), None, None)
+                      if i == 0: print(f"T3 cuLaunchKernel(NULL,1,1,1,0,1,1) rc={rc}", flush=True)
+
+              # ── T4: cuLaunchCooperativeKernel(NULL func, …) ───────────────
+              # Different function name → distinct metric series if it fires.
+              # cuLaunchCooperativeKernel has 10 args (no `extra` param).
+              _launch_coop = bind(cu, "cuLaunchCooperativeKernel", [
+                  ctypes.c_void_p,                      # CUfunction (NULL)
+                  ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,  # gridDim
+                  ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,  # blockDim
+                  ctypes.c_uint,                        # sharedMemBytes
+                  CUstream,                             # hStream
+                  ctypes.c_void_p,                      # kernelParams (NULL)
+              ])
+              if _launch_coop:
+                  for i in range(REPS):
+                      try:
+                          rc = _launch_coop(None, 1,1,1, 1,1,1, 0, CUstream(0), None)
+                          if i == 0: print(f"T4 cuLaunchCooperativeKernel(NULL) rc={rc}", flush=True)
+                      except Exception as exc:
+                          print(f"T4 exception: {exc}", flush=True); break
+              else:
+                  print("T4 cuLaunchCooperativeKernel not found in libcuda", flush=True)
+
+              print("=== s3 finished ===", flush=True)
+
+          if __name__ == "__main__":
+              try: main()
+              except Exception: traceback.print_exc()
+          PY
+      env:
+        - name: ERROR_REPS
+          value: "10"    # 10 invocations per trigger — gives clear metric counts
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s3-gpu

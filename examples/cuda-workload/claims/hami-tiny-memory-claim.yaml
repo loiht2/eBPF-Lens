@@ -1,0 +1,17 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: hami-tiny-memory-gpu
+  namespace: test
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "60"
+            memory: 32Mi

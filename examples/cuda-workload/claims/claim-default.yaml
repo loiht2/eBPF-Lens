@@ -1,0 +1,19 @@
+# claim-default.yaml — template ResourceClaim for plan-6 scenarios S1, S2, S3, S6, S7
+# Copy and rename (metadata.name) per scenario before applying.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: claim-default       # override per scenario
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "60"
+            memory: 2590Mi

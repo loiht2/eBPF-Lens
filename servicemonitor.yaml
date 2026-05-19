@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ebpf-lens-beyla
+  namespace: ebpf-lens
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: beyla
+      app.kubernetes.io/instance: ebpf-lens
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

@@ -1,0 +1,21 @@
+# claim-tight-mem.yaml — template ResourceClaim for plan-6 scenario S4 (hami-oom-zoo)
+# Very low memory quota so any large allocation is denied by libvgpu immediately,
+# firing gpu_hami_oom_events_total without reaching libcuda.so.
+# Copy and rename (metadata.name) per scenario before applying.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: claim-tight-mem     # override per scenario
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "60"
+            memory: 256Mi   # tiny quota — any alloc >256MiB denied by libvgpu before libcuda

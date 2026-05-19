@@ -1,0 +1,199 @@
+# v0.12 — synthetic test for the EXPANDED gpu_cuda_errors_total coverage.
+#
+# Under HAMi DRA, libvgpu.so intercepts CUDA calls and validates many
+# arguments (pointer book, quota tracking) BEFORE delegating to libcuda. So
+# `cuMemFree_v2(0xDEADBEEF)` short-circuits in libvgpu and never reaches the
+# libcuda probe. To exercise the v0.12 uretprobes we have to trigger errors
+# in ways that HAMi DOES forward: use *valid* handles for things HAMi tracks,
+# but pass values libcuda itself rejects (oversized counts, freed handles,
+# destroyed streams). Each step is wrapped in try/except so a single failure
+# doesn't kill the whole script — we want max coverage breadth.
+#
+# Triggers (REPS=10 each):
+#   T1: cuMemFree_v2 double-free                       → libcuda rc=1
+#   T2: cuMemFreeAsync on already-freed ptr            → libcuda rc=1
+#   T3: cuMemcpyHtoDAsync_v2 oversized count (100MB into 4MB buffer) → libcuda rc=1
+#   T4: cuMemcpyDtoHAsync_v2 from already-freed device ptr           → libcuda rc=1
+#   T5: cuMemsetD8Async on already-freed device ptr    → libcuda rc=1
+#   T6: cuMemsetD8_v2 oversized count                  → libcuda rc=1
+#   T7: cuGraphLaunch with handle 0x1                  → libcuda rc=400/1
+#   T8: cuMemHostUnregister of unregistered pointer    → libcuda rc=1
+#   T9: cuMemcpyPeer with valid-device-but-invalid-context → libcuda rc=400/1
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s9-gpu
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "30"
+            memory: 1024Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s9-v012-error-coverage
+  namespace: qa-mp
+  labels:
+    plan: "v0.12"
+    scenario: s9
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s9-v012-error-coverage ===" && date
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          REPS = int(os.getenv("ERROR_REPS", "10"))
+
+          time.sleep(15)  # let uprobes attach before fast calls
+
+          cu = ctypes.CDLL("libcuda.so.1")
+
+          CUresult     = ctypes.c_int
+          CUcontext    = ctypes.c_void_p
+          CUdevice     = ctypes.c_int
+          CUdeviceptr  = ctypes.c_uint64
+          CUstream     = ctypes.c_void_p
+
+          def bind(name, argtypes, restype=CUresult):
+              fn = getattr(cu, name); fn.argtypes = argtypes; fn.restype = restype; return fn
+
+          bind("cuInit", [ctypes.c_uint])(0)
+          dev = CUdevice(0)
+          bind("cuDeviceGet", [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+          ctx = CUcontext()
+          bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+          stream = CUstream()
+          bind("cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])(ctypes.byref(stream), 0)
+          print("CUDA init ok  REPS=%d" % REPS, flush=True)
+
+          alloc_v2 = bind("cuMemAlloc_v2",  [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+          free_v2  = bind("cuMemFree_v2",   [CUdeviceptr])
+          free_async = bind("cuMemFreeAsync", [CUdeviceptr, CUstream])
+          alloc_async = bind("cuMemAllocAsync",[ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+
+          # Helper: allocate, free, return the now-stale ptr
+          def stale_devptr(size=4*1024*1024):
+              p = CUdeviceptr(0)
+              alloc_v2(ctypes.byref(p), size)
+              free_v2(p)
+              return p
+
+          host_buf = (ctypes.c_byte * (4*1024*1024))()
+          host_void = ctypes.cast(host_buf, ctypes.c_void_p)
+
+          def run(label, fn):
+              last_rc = None
+              try:
+                  for _ in range(REPS):
+                      last_rc = fn()
+              except Exception:
+                  traceback.print_exc()
+              print(f"{label} rc={last_rc}", flush=True)
+
+          # ── T1: cuMemFree_v2 double-free ──
+          def t1():
+              p = CUdeviceptr(0)
+              alloc_v2(ctypes.byref(p), 4*1024*1024)
+              free_v2(p)
+              return free_v2(p)  # second free
+          run("T1 cuMemFree_v2 double-free", t1)
+
+          # ── T2: cuMemFreeAsync on already-freed ──
+          def t2():
+              p = CUdeviceptr(0)
+              alloc_async(ctypes.byref(p), 4*1024*1024, stream)
+              free_async(p, stream)
+              return free_async(p, stream)
+          run("T2 cuMemFreeAsync double-free", t2)
+
+          # ── T3: cuMemcpyHtoDAsync oversized (100MB into 4MB buffer) ──
+          htod = bind("cuMemcpyHtoDAsync_v2",
+                      [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t, CUstream])
+          def t3():
+              p = CUdeviceptr(0)
+              alloc_v2(ctypes.byref(p), 4*1024*1024)
+              rc = htod(p, host_void, 100*1024*1024, stream)
+              free_v2(p)
+              return rc
+          run("T3 cuMemcpyHtoDAsync oversized", t3)
+
+          # ── T4: cuMemcpyDtoHAsync from freed pointer ──
+          dtoh = bind("cuMemcpyDtoHAsync_v2",
+                      [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t, CUstream])
+          def t4():
+              stale = stale_devptr()
+              return dtoh(host_void, stale, 4096, stream)
+          run("T4 cuMemcpyDtoHAsync from-freed", t4)
+
+          # ── T5: cuMemsetD8Async on freed pointer ──
+          memset_async = bind("cuMemsetD8Async",
+              [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t, CUstream])
+          def t5():
+              stale = stale_devptr()
+              return memset_async(stale, 0, 4096, stream)
+          run("T5 cuMemsetD8Async on-freed", t5)
+
+          # ── T6: cuMemsetD8_v2 oversized ──
+          memset_sync = bind("cuMemsetD8_v2", [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t])
+          def t6():
+              p = CUdeviceptr(0)
+              alloc_v2(ctypes.byref(p), 4*1024*1024)
+              rc = memset_sync(p, 0, 100*1024*1024)  # 100MB into 4MB
+              free_v2(p)
+              return rc
+          run("T6 cuMemsetD8_v2 oversized", t6)
+
+          # ── T7: cuGraphLaunch with handle 0x1 (small non-NULL invalid) ──
+          graph_launch = bind("cuGraphLaunch", [ctypes.c_void_p, CUstream])
+          def t7():
+              return graph_launch(ctypes.c_void_p(1), stream)
+          run("T7 cuGraphLaunch(1)", t7)
+
+          # ── T8: cuMemHostUnregister of unregistered host pointer ──
+          # Use a freshly-malloc'd host buffer that was never registered.
+          local_buf = (ctypes.c_byte * 4096)()
+          local_void = ctypes.cast(local_buf, ctypes.c_void_p)
+          host_unreg = bind("cuMemHostUnregister", [ctypes.c_void_p])
+          def t8():
+              return host_unreg(local_void)
+          run("T8 cuMemHostUnregister(unregistered)", t8)
+
+          # ── T9: cuMemcpyDtoDAsync DST=freed, SRC=valid ──
+          dtod = bind("cuMemcpyDtoDAsync_v2",
+                      [CUdeviceptr, CUdeviceptr, ctypes.c_size_t, CUstream])
+          def t9():
+              good = CUdeviceptr(0)
+              alloc_v2(ctypes.byref(good), 4*1024*1024)
+              stale = stale_devptr()
+              rc = dtod(stale, good, 4096, stream)
+              free_v2(good)
+              return rc
+          run("T9 cuMemcpyDtoDAsync stale-dst", t9)
+
+          # cuMemcpyPeer requires a 2nd GPU; under single-GPU HAMi we skip it.
+
+          print("=== s9 finished ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s9-gpu

@@ -1,0 +1,160 @@
+# Plan-6 S4 — HAMi OOM zoo
+# Targets: gpu_hami_oom_events_total with >= 3 distinct cuda_function labels.
+# ResourceClaim: memory=256Mi — any alloc >256 MiB is denied by libvgpu before reaching
+# libcuda, firing the hami.c uretprobe → gpu_hami_oom_events_total.
+#
+# Triggers (each oversized, definitely >256 MiB):
+#   T1: cuMemAlloc_v2     (huge size)      → cuda_function="cuMemAlloc_v2"
+#   T2: cuMemAllocManaged (huge size)      → cuda_function="cuMemAllocManaged"
+#   T3: cuMemAllocAsync   (huge size)      → cuda_function="cuMemAllocAsync"
+#   T4: cuMemAllocHost_v2 (huge size)      → may fire if HAMi intercepts host allocs
+#   T5: cuMemHostAlloc    (huge size)      → may fire if HAMi intercepts host allocs
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s4-gpu
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "60"
+            memory: 256Mi    # tiny quota — forces OOM for any large alloc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s4-hami-oom-zoo
+  namespace: qa-mp
+  labels:
+    plan: "6"
+    scenario: s4
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s4-hami-oom-zoo ===" && date
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          REPS    = int(os.getenv("OOM_REPS",  "5"))   # reps per trigger
+          HUGE_SZ = (1 << 63) - 1                       # ~9.2 EiB — always denied by HAMi quota
+
+          CUDA_SUCCESS = 0
+          CUdevice = ctypes.c_int; CUcontext = ctypes.c_void_p
+          CUstream = ctypes.c_void_p; CUdeviceptr = ctypes.c_uint64; CUresult = ctypes.c_int
+
+          def load_libcuda():
+              for n in ("libcuda.so.1", "libcuda.so"):
+                  try: return ctypes.CDLL(n)
+                  except OSError: pass
+              return None
+
+          def bind(cu, name, argtypes, restype=None):
+              try: fn = getattr(cu, name)
+              except AttributeError: return None
+              fn.restype = restype or CUresult; fn.argtypes = argtypes; return fn
+
+          def main():
+              cu = load_libcuda()
+              if not cu: print("no libcuda", flush=True); return
+
+              bind(cu, "cuInit", [ctypes.c_uint])(0)
+              count = ctypes.c_int(0)
+              bind(cu, "cuDeviceGetCount", [ctypes.POINTER(ctypes.c_int)])(ctypes.byref(count))
+              if count.value < 1: print("no CUDA device", flush=True); return
+              ctx = CUcontext()
+              bind(cu, "cuCtxGetCurrent", [ctypes.POINTER(CUcontext)])(ctypes.byref(ctx))
+              if not ctx.value:
+                  dev = CUdevice(0)
+                  bind(cu, "cuDeviceGet",   [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+                  bind(cu, "cuCtxCreate_v2",[ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+              print(f"CUDA init ok  REPS={REPS}  HUGE_SZ={HUGE_SZ}", flush=True)
+              WARMUP = int(os.getenv("WARMUP_SLEEP", "15"))
+              print(f"warmup sleep {WARMUP}s ...", flush=True); time.sleep(WARMUP)
+
+              stream = CUstream()
+              cuStreamCreate = bind(cu, "cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])
+              cuStreamDestroy = bind(cu, "cuStreamDestroy_v2", [CUstream])
+              if cuStreamCreate: cuStreamCreate(ctypes.byref(stream), 0)
+
+              # ── T1: cuMemAlloc_v2 ─────────────────────────────────────────
+              cuMemAlloc = bind(cu, "cuMemAlloc_v2", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+              if cuMemAlloc:
+                  print(f"T1: cuMemAlloc_v2 x{REPS}", flush=True)
+                  for i in range(REPS):
+                      d = CUdeviceptr(0)
+                      rc = cuMemAlloc(ctypes.byref(d), ctypes.c_size_t(HUGE_SZ))
+                      if i == 0: print(f"  rc={rc}", flush=True)
+
+              # ── T2: cuMemAllocManaged ─────────────────────────────────────
+              cuMemAllocManaged = bind(cu, "cuMemAllocManaged",
+                                       [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, ctypes.c_uint])
+              if cuMemAllocManaged:
+                  print(f"T2: cuMemAllocManaged x{REPS}", flush=True)
+                  for i in range(REPS):
+                      d = CUdeviceptr(0)
+                      rc = cuMemAllocManaged(ctypes.byref(d), ctypes.c_size_t(HUGE_SZ), 1)
+                      if i == 0: print(f"  rc={rc}", flush=True)
+
+              # ── T3: cuMemAllocAsync ───────────────────────────────────────
+              cuMemAllocAsync = bind(cu, "cuMemAllocAsync",
+                                     [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+              if cuMemAllocAsync and stream.value:
+                  print(f"T3: cuMemAllocAsync x{REPS}", flush=True)
+                  for i in range(REPS):
+                      d = CUdeviceptr(0)
+                      rc = cuMemAllocAsync(ctypes.byref(d), ctypes.c_size_t(HUGE_SZ), stream)
+                      if i == 0: print(f"  rc={rc}", flush=True)
+
+              # ── T4: cuMemAllocHost_v2 (host pinned) ───────────────────────
+              # HAMi may or may not intercept host allocs; try and record rc.
+              cuMemAllocHost = bind(cu, "cuMemAllocHost_v2",
+                                    [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t])
+              if cuMemAllocHost:
+                  print(f"T4: cuMemAllocHost_v2 x{REPS}", flush=True)
+                  for i in range(REPS):
+                      h = ctypes.c_void_p()
+                      rc = cuMemAllocHost(ctypes.byref(h), ctypes.c_size_t(HUGE_SZ))
+                      if i == 0: print(f"  rc={rc}", flush=True)
+
+              # ── T5: cuMemHostAlloc ────────────────────────────────────────
+              cuMemHostAlloc = bind(cu, "cuMemHostAlloc",
+                                    [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint])
+              if cuMemHostAlloc:
+                  print(f"T5: cuMemHostAlloc x{REPS}", flush=True)
+                  for i in range(REPS):
+                      h = ctypes.c_void_p()
+                      rc = cuMemHostAlloc(ctypes.byref(h), ctypes.c_size_t(HUGE_SZ), 0)
+                      if i == 0: print(f"  rc={rc}", flush=True)
+
+              if stream.value and cuStreamDestroy: cuStreamDestroy(stream)
+              print("=== s4 finished ===", flush=True)
+
+          if __name__ == "__main__":
+              try: main()
+              except Exception: traceback.print_exc()
+          PY
+      env:
+        - name: OOM_REPS
+          value: "5"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s4-gpu

@@ -1,0 +1,116 @@
+# gpu-peer-copy-job — exercises cuMemcpyPeer / cuMemcpyPeerAsync.
+# With a single physical GPU we can still trigger these by creating two contexts
+# on the same device. cuCtxEnablePeerAccess between same-device contexts is
+# accepted by the driver (no-op), and cuMemcpyPeer then succeeds — that is
+# enough for the libcuda probe to fire and the metric to populate.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-peer-copy-claim
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "20"
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-peer-copy-job
+  namespace: qa-mp
+  labels:
+    suite: coverage-v0.12
+    workload: peer-copy
+spec:
+  restartPolicy: Never
+  containers:
+    - name: peer-copier
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DURATION_SEC
+          value: "900"
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== gpu-peer-copy-job ===" && date
+          python - <<'PY'
+          import os, time, ctypes
+
+          DURATION = int(os.getenv("DURATION_SEC", "300"))
+          time.sleep(10)  # let uprobes attach
+
+          cu = ctypes.CDLL("libcuda.so.1")
+          CUresult     = ctypes.c_int
+          CUcontext    = ctypes.c_void_p
+          CUdevice     = ctypes.c_int
+          CUdeviceptr  = ctypes.c_uint64
+          CUstream     = ctypes.c_void_p
+
+          def bind(name, args, restype=CUresult):
+              fn = getattr(cu, name); fn.argtypes = args; fn.restype = restype; return fn
+
+          bind("cuInit", [ctypes.c_uint])(0)
+          dev = CUdevice(0)
+          bind("cuDeviceGet", [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+
+          # Two contexts on the SAME device
+          ctxA = CUcontext()
+          ctxB = CUcontext()
+          bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctxA), 0, dev)
+          bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctxB), 0, dev)
+          # Enable peer access — accepted as no-op on same-device contexts
+          enable_peer = bind("cuCtxEnablePeerAccess", [CUcontext, ctypes.c_uint])
+          bind("cuCtxSetCurrent", [CUcontext])(ctxA); enable_peer(ctxB, 0)
+          bind("cuCtxSetCurrent", [CUcontext])(ctxB); enable_peer(ctxA, 0)
+
+          # Allocate one buffer in each context
+          alloc = bind("cuMemAlloc_v2", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+          free_ = bind("cuMemFree_v2", [CUdeviceptr])
+          stream = CUstream()
+          bind("cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])(ctypes.byref(stream), 0)
+
+          BUF = 4 * 1024 * 1024
+          bind("cuCtxSetCurrent", [CUcontext])(ctxA)
+          pA = CUdeviceptr(0); alloc(ctypes.byref(pA), BUF)
+          bind("cuCtxSetCurrent", [CUcontext])(ctxB)
+          pB = CUdeviceptr(0); alloc(ctypes.byref(pB), BUF)
+          print("contexts + buffers ready", flush=True)
+
+          peer = bind("cuMemcpyPeer",
+              [CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, ctypes.c_size_t])
+          peer_async = bind("cuMemcpyPeerAsync",
+              [CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, ctypes.c_size_t, CUstream])
+
+          end_at = time.monotonic() + DURATION
+          n = 0
+          while time.monotonic() < end_at:
+              # alternate sync + async peer copies
+              peer(pB, ctxB, pA, ctxA, BUF)
+              peer_async(pA, ctxA, pB, ctxB, BUF, stream)
+              bind("cuStreamSynchronize", [CUstream])(stream)
+              n += 2
+              if n % 200 == 0:
+                  print(f"peer_copies={n}", flush=True)
+              time.sleep(0.5)
+
+          # Cleanup
+          bind("cuCtxSetCurrent", [CUcontext])(ctxA); free_(pA)
+          bind("cuCtxSetCurrent", [CUcontext])(ctxB); free_(pB)
+          print(f"=== peer-copy done  total={n} ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: gpu-peer-copy-claim

@@ -1,0 +1,318 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-full-coverage-train
+  namespace: test
+  labels:
+    job-type: training
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== hami-full-coverage-train started ===" && date
+          echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          ITERATIONS = int(os.getenv("CUDA_TEST_ITERS", "300"))
+          SLEEP_SECONDS = float(os.getenv("CUDA_TEST_SLEEP", "0.5"))
+          MATRIX_SIZE = int(os.getenv("CUDA_TEST_MATRIX_SIZE", "4096"))
+          DRIVER_BYTES = int(os.getenv("CUDA_DRIVER_BYTES", str(256 * 1024 * 1024)))
+          ENABLE_INTENTIONAL_CUDA_ERROR = os.getenv("ENABLE_INTENTIONAL_CUDA_ERROR", "0") == "1"
+          ENABLE_INVALID_SYNC  = os.getenv("ENABLE_INVALID_SYNC", "0") == "1"
+          ENABLE_GRAPH_LAUNCH  = os.getenv("ENABLE_GRAPH_LAUNCH", "0") == "1"
+
+          CUDA_SUCCESS = 0
+          CUdevice    = ctypes.c_int
+          CUcontext   = ctypes.c_void_p
+          CUstream    = ctypes.c_void_p
+          CUevent     = ctypes.c_void_p
+          CUdeviceptr = ctypes.c_uint64
+          CUresult    = ctypes.c_int
+
+          def load_libcuda():
+              for name in ("libcuda.so.1", "libcuda.so"):
+                  try: return ctypes.CDLL(name)
+                  except OSError: pass
+              return None
+
+          class CudaDriver:
+              def __init__(self):
+                  self.cuda = load_libcuda()
+                  self.funcs = {}
+                  if self.cuda is None:
+                      print("libcuda not found", flush=True); return
+                  self._bind_all()
+              def _bind(self, name, argtypes):
+                  try: fn = getattr(self.cuda, name)
+                  except AttributeError: return None
+                  fn.restype = CUresult; fn.argtypes = argtypes
+                  self.funcs[name] = fn; return fn
+              def _bind_all(self):
+                  self._bind("cuGetErrorName", [CUresult, ctypes.POINTER(ctypes.c_char_p)])
+                  self._bind("cuInit", [ctypes.c_uint])
+                  self._bind("cuDeviceGetCount", [ctypes.POINTER(ctypes.c_int)])
+                  self._bind("cuDeviceGet", [ctypes.POINTER(CUdevice), ctypes.c_int])
+                  self._bind("cuCtxGetCurrent", [ctypes.POINTER(CUcontext)])
+                  self._bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])
+                  self._bind("cuCtxSynchronize", [])
+                  self._bind("cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])
+                  self._bind("cuStreamSynchronize", [CUstream])
+                  self._bind("cuStreamDestroy_v2", [CUstream])
+                  self._bind("cuEventCreate", [ctypes.POINTER(CUevent), ctypes.c_uint])
+                  self._bind("cuEventRecord", [CUevent, CUstream])
+                  self._bind("cuEventSynchronize", [CUevent])
+                  self._bind("cuEventDestroy_v2", [CUevent])
+                  self._bind("cuMemAlloc_v2", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+                  self._bind("cuMemAllocManaged", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, ctypes.c_uint])
+                  self._bind("cuMemAllocHost_v2", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t])
+                  self._bind("cuMemHostAlloc", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint])
+                  self._bind("cuMemAllocAsync", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+                  self._bind("cuMemFree_v2", [CUdeviceptr])
+                  self._bind("cuMemFreeHost", [ctypes.c_void_p])
+                  self._bind("cuMemFreeAsync", [CUdeviceptr, CUstream])
+                  self._bind("cuMemcpyHtoDAsync_v2", [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t, CUstream])
+                  self._bind("cuMemcpyDtoHAsync_v2", [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t, CUstream])
+                  self._bind("cuMemcpyDtoDAsync_v2", [CUdeviceptr, CUdeviceptr, ctypes.c_size_t, CUstream])
+                  self._bind("cuMemsetD8_v2", [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t])
+                  self._bind("cuMemsetD8Async", [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t, CUstream])
+              def available(self): return self.cuda is not None
+              def call(self, name, *args, fatal=False):
+                  fn = self.funcs.get(name)
+                  if fn is None: return None
+                  rc = fn(*args)
+                  if rc != CUDA_SUCCESS:
+                      print(f"{name} rc={rc}", flush=True)
+                      if fatal: raise RuntimeError(f"{name} failed rc={rc}")
+                  return rc
+              def ensure_context(self):
+                  if not self.available(): return False
+                  self.call("cuInit", 0, fatal=True)
+                  count = ctypes.c_int(0)
+                  self.call("cuDeviceGetCount", ctypes.byref(count), fatal=True)
+                  print(f"driver cuda device count: {count.value}", flush=True)
+                  if count.value < 1: return False
+                  ctx = CUcontext()
+                  self.call("cuCtxGetCurrent", ctypes.byref(ctx), fatal=True)
+                  if not ctx.value:
+                      dev = CUdevice(0)
+                      self.call("cuDeviceGet", ctypes.byref(dev), 0, fatal=True)
+                      self.call("cuCtxCreate_v2", ctypes.byref(ctx), 0, dev, fatal=True)
+                      print("created CUDA driver context", flush=True)
+                  return True
+              def exercise_once(self, nbytes, emit_hami_oom=False, emit_invalid_sync=False):
+                  stream = CUstream(); event = CUevent()
+                  d_a = CUdeviceptr(0); d_b = CUdeviceptr(0)
+                  d_managed = CUdeviceptr(0); d_async = CUdeviceptr(0)
+                  h_a = ctypes.c_void_p(); h_b = ctypes.c_void_p()
+                  ctx = CUcontext()
+                  try:
+                      self.call("cuCtxGetCurrent", ctypes.byref(ctx))
+                      self.call("cuStreamCreate", ctypes.byref(stream), 0)
+                      self.call("cuEventCreate", ctypes.byref(event), 0)
+                      self.call("cuMemAlloc_v2", ctypes.byref(d_a), nbytes)
+                      self.call("cuMemAlloc_v2", ctypes.byref(d_b), nbytes)
+                      self.call("cuMemAllocManaged", ctypes.byref(d_managed), nbytes, 1)
+                      self.call("cuMemAllocHost_v2", ctypes.byref(h_a), nbytes)
+                      self.call("cuMemHostAlloc", ctypes.byref(h_b), nbytes, 0)
+                      if stream.value: self.call("cuMemAllocAsync", ctypes.byref(d_async), nbytes, stream)
+                      if d_a.value: self.call("cuMemsetD8_v2", d_a, 0, nbytes)
+                      if d_a.value: self.call("cuMemsetD8Async", d_b, 0, nbytes, stream)
+                      if d_a.value and h_a.value and stream.value:
+                          self.call("cuMemcpyHtoDAsync_v2", d_a, h_a, nbytes, stream)
+                          self.call("cuMemcpyDtoHAsync_v2", h_b, d_a, nbytes, stream)
+                      if d_a.value and d_b.value and stream.value:
+                          self.call("cuMemcpyDtoDAsync_v2", d_b, d_a, nbytes, stream)
+                      if event.value and stream.value:
+                          self.call("cuEventRecord", event, stream)
+                          self.call("cuEventSynchronize", event)
+                      if stream.value: self.call("cuStreamSynchronize", stream)
+                      self.call("cuCtxSynchronize")
+                      if emit_hami_oom:
+                          # Oversized alloc → HAMi libvgpu.so rejects before libcuda → fires
+                          # gpu_hami_oom_events_total (event 11 from hami.c uretprobe).
+                          bad = CUdeviceptr(0)
+                          self.call("cuMemAlloc_v2", ctypes.byref(bad), ctypes.c_size_t((1 << 63) - 1))
+                          if bad.value: self.call("cuMemFree_v2", bad)
+                      if emit_invalid_sync:
+                          # cuLaunchKernel(NULL func, ...) → HAMi SM-quota interceptor passes
+                          # NULL through to libcuda.so → CUDA_ERROR_INVALID_HANDLE (400).
+                          # uretprobe on libcuda.so::cuLaunchKernel fires → gpu_cuda_errors_total.
+                          _cu2 = load_libcuda()
+                          if _cu2 is not None:
+                              _launch = _cu2.cuLaunchKernel
+                              _launch.restype = CUresult
+                              _launch.argtypes = [
+                                  ctypes.c_void_p,   # CUfunction (NULL)
+                                  ctypes.c_uint,     # gridDimX
+                                  ctypes.c_uint,     # gridDimY
+                                  ctypes.c_uint,     # gridDimZ
+                                  ctypes.c_uint,     # blockDimX
+                                  ctypes.c_uint,     # blockDimY
+                                  ctypes.c_uint,     # blockDimZ
+                                  ctypes.c_uint,     # sharedMemBytes
+                                  CUstream,          # hStream
+                                  ctypes.c_void_p,   # kernelParams (NULL)
+                                  ctypes.c_void_p,   # extra (NULL)
+                              ]
+                              _launch(None, 1, 1, 1, 1, 1, 1, 0, CUstream(0), None, None)
+                  finally:
+                      if d_async.value and stream.value:
+                          self.call("cuMemFreeAsync", d_async, stream)
+                          self.call("cuStreamSynchronize", stream)
+                      if d_managed.value: self.call("cuMemFree_v2", d_managed)
+                      if d_b.value: self.call("cuMemFree_v2", d_b)
+                      if d_a.value: self.call("cuMemFree_v2", d_a)
+                      if h_b.value: self.call("cuMemFreeHost", h_b)
+                      if h_a.value: self.call("cuMemFreeHost", h_a)
+                      if event.value: self.call("cuEventDestroy_v2", event)
+                      if stream.value: self.call("cuStreamDestroy_v2", stream)
+
+          def main():
+              print(f"ITERS={ITERATIONS} SLEEP={SLEEP_SECONDS} SIZE={MATRIX_SIZE} BYTES={DRIVER_BYTES} "
+                    f"HAMI_OOM={int(ENABLE_INTENTIONAL_CUDA_ERROR)} "
+                    f"INVALID_SYNC={int(ENABLE_INVALID_SYNC)} "
+                    f"GRAPH={int(ENABLE_GRAPH_LAUNCH)}", flush=True)
+              try:
+                  import torch
+                  print(f"torch={torch.__version__} cuda={torch.cuda.is_available()}", flush=True)
+                  if not torch.cuda.is_available():
+                      for i in range(ITERATIONS):
+                          print(f"step={i} no-cuda", flush=True); time.sleep(SLEEP_SECONDS)
+                      return
+                  torch.cuda.set_device(0); torch.cuda.init()
+                  torch.empty(1, device="cuda")
+                  driver = CudaDriver(); driver_ready = driver.ensure_context()
+                  x = torch.randn(MATRIX_SIZE, MATRIX_SIZE, device="cuda")
+                  y = torch.randn(MATRIX_SIZE, MATRIX_SIZE, device="cuda")
+
+                  # Gap A — CUDA graph launch (cuGraphLaunch uprobe, event 4).
+                  # Use Driver API directly via a fresh CDLL handle.  This avoids
+                  # PyTorch stream-capture (which HAMi does not support) and also
+                  # isolates the new function bindings from the CudaDriver class.
+                  if ENABLE_GRAPH_LAUNCH and driver_ready:
+                      try:
+                          _cu = load_libcuda()
+                          if _cu is not None:
+                              _cu_graph_create = _cu.cuGraphCreate
+                              _cu_graph_create.restype = CUresult
+                              _cu_graph_create.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint]
+
+                              # In CUDA 12, cuGraphInstantiate_v2 is the CUDA 11
+                              # backward-compat 5-arg form:
+                              #   (CUgraphExec*, CUgraph, CUgraphNode* errNode, char* log, size_t logSz)
+                              # HAMi intercepts it; passing only 3 args left rcx/r8
+                              # as garbage so HAMi crashed.  Pass all 5 properly.
+                              _cu_graph_inst = _cu.cuGraphInstantiate_v2
+                              _cu_graph_inst.restype = CUresult
+                              _cu_graph_inst.argtypes = [ctypes.POINTER(ctypes.c_void_p),
+                                                         ctypes.c_void_p,
+                                                         ctypes.POINTER(ctypes.c_void_p),  # phErrorNode
+                                                         ctypes.c_char_p,                   # logBuffer
+                                                         ctypes.c_size_t]                   # bufferSize
+
+                              _cu_graph_launch = _cu.cuGraphLaunch
+                              _cu_graph_launch.restype = CUresult
+                              _cu_graph_launch.argtypes = [ctypes.c_void_p, CUstream]
+
+                              _cu_graph_exec_destroy = _cu.cuGraphExecDestroy
+                              _cu_graph_exec_destroy.restype = CUresult
+                              _cu_graph_exec_destroy.argtypes = [ctypes.c_void_p]
+
+                              _cu_graph_destroy = _cu.cuGraphDestroy
+                              _cu_graph_destroy.restype = CUresult
+                              _cu_graph_destroy.argtypes = [ctypes.c_void_p]
+
+                              _cu_stream_create = _cu.cuStreamCreate
+                              _cu_stream_create.restype = CUresult
+                              _cu_stream_create.argtypes = [ctypes.POINTER(CUstream), ctypes.c_uint]
+
+                              _cu_stream_sync = _cu.cuStreamSynchronize
+                              _cu_stream_sync.restype = CUresult
+                              _cu_stream_sync.argtypes = [CUstream]
+
+                              _cu_stream_destroy = _cu.cuStreamDestroy_v2
+                              _cu_stream_destroy.restype = CUresult
+                              _cu_stream_destroy.argtypes = [CUstream]
+
+                              gstream    = CUstream()
+                              graph      = ctypes.c_void_p()
+                              graph_exec = ctypes.c_void_p()
+                              ok = True
+                              if _cu_stream_create(ctypes.byref(gstream), 0) != CUDA_SUCCESS:
+                                  ok = False
+                              if ok and _cu_graph_create(ctypes.byref(graph), 0) != CUDA_SUCCESS:
+                                  ok = False
+                              if ok:
+                                  _err_node = ctypes.c_void_p(0)
+                                  _rc_inst = _cu_graph_inst(ctypes.byref(graph_exec), graph,
+                                                            ctypes.byref(_err_node), None, 0)
+                                  if _rc_inst != CUDA_SUCCESS: ok = False
+                              if ok:
+                                  _cu_graph_launch(graph_exec, gstream)
+                                  for _ in range(9):
+                                      _cu_graph_launch(graph_exec, gstream)
+                                  _cu_stream_sync(gstream)
+                                  print("graph launch OK (10x cuGraphLaunch)", flush=True)
+                                  _cu_graph_exec_destroy(graph_exec)
+                              if graph.value:
+                                  _cu_graph_destroy(graph)
+                              if gstream.value:
+                                  _cu_stream_destroy(gstream)
+                      except Exception as exc:
+                          print(f"graph launch failed: {exc}", flush=True)
+
+                  for i in range(ITERATIONS):
+                      if driver_ready:
+                          driver.exercise_once(
+                              DRIVER_BYTES,
+                              emit_hami_oom=(ENABLE_INTENTIONAL_CUDA_ERROR and i == 5),
+                              emit_invalid_sync=(ENABLE_INVALID_SYNC and i == 10),
+                          )
+                      z = torch.relu(x @ y)
+                      torch.cuda.current_stream().synchronize()
+                      torch.cuda.synchronize()
+                      print(f"step={i} mean={z.mean().item():.4f}", flush=True)
+                      time.sleep(SLEEP_SECONDS)
+              except Exception as exc:
+                  traceback.print_exc()
+                  for i in range(ITERATIONS):
+                      print(f"fallback step={i}", flush=True); time.sleep(SLEEP_SECONDS)
+              finally:
+                  print("=== finished ===", flush=True)
+
+          if __name__ == "__main__": main()
+          PY
+      env:
+        - name: CUDA_TEST_ITERS
+          value: "300"
+        - name: CUDA_TEST_SLEEP
+          value: "0.5"
+        - name: CUDA_TEST_MATRIX_SIZE
+          value: "4096"
+        # 256 MiB per driver alloc; 3 device allocs + async = ~768 MiB peak.
+        - name: CUDA_DRIVER_BYTES
+          value: "268435456"
+        # Gap C: oversized cuMemAlloc_v2 → HAMi libvgpu.so rejects → gpu_hami_oom_events_total
+        - name: ENABLE_INTENTIONAL_CUDA_ERROR
+          value: "1"
+        # Gap B: cuLaunchKernel(NULL func) → HAMi passes NULL to libcuda → CUDA_ERROR_INVALID_HANDLE (400)
+        # → gpu_cuda_errors_total (via cuLaunchKernel uretprobe in cuda.c)
+        - name: ENABLE_INVALID_SYNC
+          value: "1"
+        # Gap A: torch.cuda.CUDAGraph().replay() → cuGraphLaunch → gpu_cuda_graph_launch_calls_total
+        - name: ENABLE_GRAPH_LAUNCH
+          value: "1"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: single-gpu-0

@@ -1,0 +1,75 @@
+# gpu-throttle-stress-job — tight kernel launch loop with very low SM quota.
+# Covers: gpu_hami_compute_throttle_duration_seconds — HAMi rate_limiter() stalls.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-throttle-claim
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "10"      # 10% SM → heavy throttle
+            memory: 1024Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-throttle-stress-job
+  namespace: qa-mp
+  labels:
+    suite: coverage-v0.12
+    workload: throttle-stress
+spec:
+  restartPolicy: Never
+  containers:
+    - name: stressor
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DURATION_SEC
+          value: "900"
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== gpu-throttle-stress-job ===" && date
+          python - <<'PY'
+          import os, time, torch
+
+          DURATION = int(os.getenv("DURATION_SEC", "300"))
+
+          torch.cuda.set_device(0)
+          torch.cuda.init()
+          torch.empty(1, device="cuda")
+
+          # Large matrices → many kernels per launch → strong throttle pressure
+          MATRIX = 4096
+          a = torch.randn(MATRIX, MATRIX, device="cuda")
+          b = torch.randn(MATRIX, MATRIX, device="cuda")
+
+          end_at = time.monotonic() + DURATION
+          step = 0
+          while time.monotonic() < end_at:
+              # No sleep — back-to-back launches to maximise throttle events
+              c = torch.relu(a @ b)
+              # Don't sync every iter — let HAMi rate_limiter stall the next launches
+              step += 1
+              if step % 100 == 0:
+                  torch.cuda.synchronize()
+                  print(f"step={step}", flush=True)
+          torch.cuda.synchronize()
+          print(f"=== throttle-stress done  steps={step} ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: gpu-throttle-claim

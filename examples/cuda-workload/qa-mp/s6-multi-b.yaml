@@ -1,0 +1,164 @@
+# Plan-6 S6-B — multi-pod isolation (pod B)
+# Apply together with s6-multi-a.yaml:
+#   kubectl apply -f s6-multi-a.yaml -f s6-multi-b.yaml
+# Capture snapshot while BOTH pods are running.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s6-gpu-b
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "40"
+            memory: 1024Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s6-multi-b
+  namespace: qa-mp
+  labels:
+    plan: "6"
+    scenario: s6
+    instance: b
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s6-multi-b ===" && date
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          ITERS  = int(os.getenv("CUDA_TEST_ITERS",        "120"))
+          SLEEP  = float(os.getenv("CUDA_TEST_SLEEP",      "0.5"))
+          MATRIX = int(os.getenv("CUDA_TEST_MATRIX_SIZE",  "2048"))
+          DBYTES = int(os.getenv("CUDA_DRIVER_BYTES",      str(8 * 1024 * 1024)))
+
+          CUDA_SUCCESS = 0
+          CUdevice = ctypes.c_int; CUcontext = ctypes.c_void_p
+          CUstream = ctypes.c_void_p; CUevent  = ctypes.c_void_p
+          CUdeviceptr = ctypes.c_uint64; CUresult = ctypes.c_int
+
+          def load_libcuda():
+              for n in ("libcuda.so.1", "libcuda.so"):
+                  try: return ctypes.CDLL(n)
+                  except OSError: pass
+              return None
+
+          def bind(cu, name, argtypes, restype=None):
+              try: fn = getattr(cu, name)
+              except AttributeError: return None
+              fn.restype = restype or CUresult; fn.argtypes = argtypes; return fn
+
+          def exercise_once(cu, nbytes):
+              cuStreamCreate    = bind(cu, "cuStreamCreate",     [ctypes.POINTER(CUstream), ctypes.c_uint])
+              cuStreamSync      = bind(cu, "cuStreamSynchronize",[CUstream])
+              cuStreamDestroy   = bind(cu, "cuStreamDestroy_v2", [CUstream])
+              cuEventCreate     = bind(cu, "cuEventCreate",      [ctypes.POINTER(CUevent), ctypes.c_uint])
+              cuEventRecord     = bind(cu, "cuEventRecord",      [CUevent, CUstream])
+              cuEventSync       = bind(cu, "cuEventSynchronize", [CUevent])
+              cuEventDestroy    = bind(cu, "cuEventDestroy_v2",  [CUevent])
+              cuCtxSync         = bind(cu, "cuCtxSynchronize",   [])
+              cuMemAlloc        = bind(cu, "cuMemAlloc_v2",      [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+              cuMemAllocManaged = bind(cu, "cuMemAllocManaged",   [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, ctypes.c_uint])
+              cuMemAllocHost    = bind(cu, "cuMemAllocHost_v2",  [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t])
+              cuMemAllocAsync   = bind(cu, "cuMemAllocAsync",    [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+              cuMemFree         = bind(cu, "cuMemFree_v2",       [CUdeviceptr])
+              cuMemFreeHost     = bind(cu, "cuMemFreeHost",      [ctypes.c_void_p])
+              cuMemFreeAsync    = bind(cu, "cuMemFreeAsync",     [CUdeviceptr, CUstream])
+              cuMemcpyHtoD      = bind(cu, "cuMemcpyHtoDAsync_v2",[CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t, CUstream])
+              cuMemcpyDtoH      = bind(cu, "cuMemcpyDtoHAsync_v2",[ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t, CUstream])
+              cuMemsetSync      = bind(cu, "cuMemsetD8_v2",      [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t])
+              cuMemsetAsync     = bind(cu, "cuMemsetD8Async",    [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t, CUstream])
+
+              stream = CUstream(); event = CUevent()
+              d_a = CUdeviceptr(0); d_m = CUdeviceptr(0); d_p = CUdeviceptr(0)
+              h_a = ctypes.c_void_p()
+              try:
+                  if cuStreamCreate:  cuStreamCreate(ctypes.byref(stream), 0)
+                  if cuEventCreate:   cuEventCreate(ctypes.byref(event), 0)
+                  if cuMemAlloc:      cuMemAlloc(ctypes.byref(d_a), nbytes)
+                  if cuMemAllocManaged: cuMemAllocManaged(ctypes.byref(d_m), nbytes, 1)
+                  if cuMemAllocHost:  cuMemAllocHost(ctypes.byref(h_a), nbytes)
+                  if cuMemAllocAsync and stream.value:
+                      cuMemAllocAsync(ctypes.byref(d_p), nbytes, stream)
+                  if cuMemsetSync and d_a.value:  cuMemsetSync(d_a, 0, nbytes)
+                  if cuMemsetAsync and d_a.value and stream.value:
+                      cuMemsetAsync(d_a, 0, nbytes, stream)
+                  if cuMemcpyHtoD and d_a.value and h_a.value and stream.value:
+                      cuMemcpyHtoD(d_a, h_a, nbytes, stream)
+                  if cuMemcpyDtoH and d_a.value and h_a.value and stream.value:
+                      cuMemcpyDtoH(h_a, d_a, nbytes, stream)
+                  if cuEventRecord and event.value and stream.value:
+                      cuEventRecord(event, stream)
+                  if cuEventSync and event.value: cuEventSync(event)
+                  if cuStreamSync and stream.value: cuStreamSync(stream)
+                  if cuCtxSync: cuCtxSync()
+              finally:
+                  if d_p.value and cuMemFreeAsync and stream.value:
+                      cuMemFreeAsync(d_p, stream); cuStreamSync(stream)
+                  if d_m.value and cuMemFree:  cuMemFree(d_m)
+                  if d_a.value and cuMemFree:  cuMemFree(d_a)
+                  if h_a.value and cuMemFreeHost: cuMemFreeHost(h_a)
+                  if event.value and cuEventDestroy:  cuEventDestroy(event)
+                  if stream.value and cuStreamDestroy: cuStreamDestroy(stream)
+
+          def main():
+              print(f"pod=s6-multi-b  ITERS={ITERS} SLEEP={SLEEP} MATRIX={MATRIX}", flush=True)
+              try:
+                  import torch
+                  if not torch.cuda.is_available(): return
+                  torch.cuda.set_device(0); torch.cuda.init(); torch.empty(1, device="cuda")
+                  cu = load_libcuda()
+                  if cu:
+                      bind(cu, "cuInit", [ctypes.c_uint])(0)
+                      ctx = CUcontext()
+                      bind(cu, "cuCtxGetCurrent", [ctypes.POINTER(CUcontext)])(ctypes.byref(ctx))
+                      if not ctx.value:
+                          dev = CUdevice(0)
+                          bind(cu, "cuDeviceGet",   [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+                          bind(cu, "cuCtxCreate_v2",[ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+                  x = torch.randn(MATRIX, MATRIX, device="cuda")
+                  y = torch.randn(MATRIX, MATRIX, device="cuda")
+                  for i in range(ITERS):
+                      if cu: exercise_once(cu, DBYTES)
+                      z = torch.relu(x @ y)
+                      torch.cuda.synchronize()
+                      print(f"pod-b step={i} mean={z.mean().item():.4f}", flush=True)
+                      time.sleep(SLEEP)
+              except Exception: traceback.print_exc()
+              finally: print("=== s6-b finished ===", flush=True)
+
+          if __name__ == "__main__": main()
+          PY
+      env:
+        - name: CUDA_TEST_ITERS
+          value: "120"
+        - name: CUDA_TEST_SLEEP
+          value: "0.5"
+        - name: CUDA_TEST_MATRIX_SIZE
+          value: "2048"
+        - name: CUDA_DRIVER_BYTES
+          value: "8388608"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s6-gpu-b

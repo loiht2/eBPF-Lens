@@ -1,0 +1,138 @@
+# v0.11 follow-up — synthetic test for the 3 new probes
+# Calls cuMemAllocFromPoolAsync, cuMemHostRegister/Unregister, cuEventElapsedTime
+# directly via ctypes to verify probes fire and metrics emit.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s8-gpu
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "30"
+            memory: 1024Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s8-new-probes-test
+  namespace: qa-mp
+  labels:
+    plan: "v0.11"
+    scenario: s8
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s8-new-probes-test ===" && date
+          python - <<'PY'
+          import ctypes, os, time
+
+          # 15 s warm-up so uprobes attach before fast calls
+          time.sleep(15)
+          cu = ctypes.CDLL("libcuda.so.1")
+
+          # CUDA types
+          CUresult     = ctypes.c_int
+          CUcontext    = ctypes.c_void_p
+          CUdevice     = ctypes.c_int
+          CUdeviceptr  = ctypes.c_uint64
+          CUstream     = ctypes.c_void_p
+          CUevent      = ctypes.c_void_p
+          CUmemoryPool = ctypes.c_void_p
+
+          def bind(name, argtypes, restype=CUresult):
+              fn = getattr(cu, name); fn.argtypes = argtypes; fn.restype = restype; return fn
+
+          # ── init + context ──
+          bind("cuInit", [ctypes.c_uint])(0)
+          dev = CUdevice(0)
+          bind("cuDeviceGet", [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+          ctx = CUcontext()
+          bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+          print("CUDA init ok", flush=True)
+
+          # ── 1. cuMemAllocFromPoolAsync ──
+          # First get the default pool, then alloc from it.
+          pool = CUmemoryPool()
+          bind("cuDeviceGetDefaultMemPool", [ctypes.POINTER(CUmemoryPool), CUdevice])(ctypes.byref(pool), dev)
+          stream = CUstream()
+          bind("cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])(ctypes.byref(stream), 0)
+
+          alloc_pool = bind("cuMemAllocFromPoolAsync",
+              [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUmemoryPool, CUstream])
+          free_async = bind("cuMemFreeAsync", [CUdeviceptr, CUstream])
+
+          print("T1: cuMemAllocFromPoolAsync x20", flush=True)
+          for i in range(20):
+              d = CUdeviceptr(0)
+              alloc_pool(ctypes.byref(d), 4 * 1024 * 1024, pool, stream)   # 4 MiB
+              if d.value:
+                  free_async(d, stream)
+          bind("cuStreamSynchronize", [CUstream])(stream)
+
+          # ── 2. cuMemHostRegister + cuMemHostUnregister ──
+          # Allocate a host buffer with malloc-like memory; register with CUDA; unregister.
+          BUF_SZ = 2 * 1024 * 1024
+          host_buf = (ctypes.c_byte * BUF_SZ)()
+          host_register = bind("cuMemHostRegister",
+              [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint])
+          host_unregister = bind("cuMemHostUnregister", [ctypes.c_void_p])
+
+          print("T2: cuMemHostRegister + Unregister x10", flush=True)
+          for i in range(10):
+              rc1 = host_register(ctypes.cast(host_buf, ctypes.c_void_p), BUF_SZ, 0)
+              rc2 = host_unregister(ctypes.cast(host_buf, ctypes.c_void_p))
+              if i == 0: print(f"  register rc={rc1}, unregister rc={rc2}", flush=True)
+
+          # ── 3. cuEventElapsedTime ──
+          # Record start, do some GPU work, record end, sync, get elapsed.
+          start = CUevent(); end = CUevent()
+          bind("cuEventCreate", [ctypes.POINTER(CUevent), ctypes.c_uint])(ctypes.byref(start), 0)
+          bind("cuEventCreate", [ctypes.POINTER(CUevent), ctypes.c_uint])(ctypes.byref(end), 0)
+          rec = bind("cuEventRecord", [CUevent, CUstream])
+          sync_e = bind("cuEventSynchronize", [CUevent])
+          elapsed = bind("cuEventElapsedTime", [ctypes.POINTER(ctypes.c_float), CUevent, CUevent])
+
+          # Do some work between events (a memset is enough)
+          d = CUdeviceptr(0)
+          bind("cuMemAlloc_v2", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])(ctypes.byref(d), 4 * 1024 * 1024)
+          memset_async = bind("cuMemsetD8Async",
+              [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t, CUstream])
+
+          print("T3: cuEventElapsedTime x30 (record-work-sync-elapsed cycle)", flush=True)
+          for i in range(30):
+              rec(start, stream)
+              for _ in range(50):
+                  memset_async(d, 0, 4 * 1024 * 1024, stream)
+              rec(end, stream)
+              sync_e(end)
+              ms = ctypes.c_float(0.0)
+              rc = elapsed(ctypes.byref(ms), start, end)
+              if i == 0: print(f"  elapsed: rc={rc} ms={ms.value:.4f}", flush=True)
+
+          bind("cuMemFree_v2", [CUdeviceptr])(d)
+          bind("cuEventDestroy_v2", [CUevent])(start)
+          bind("cuEventDestroy_v2", [CUevent])(end)
+          bind("cuStreamDestroy_v2", [CUstream])(stream)
+          print("=== s8 finished ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s8-gpu

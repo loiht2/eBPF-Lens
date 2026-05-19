@@ -1,0 +1,79 @@
+# gpu-inferencing-job — steady inference loop, reuses buffers.
+# Covers: kernel launch rate (steady), low alloc/free churn, low memcpy.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-inferencing-claim
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "30"
+            memory: 1024Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-inferencing-job
+  namespace: qa-mp
+  labels:
+    suite: coverage-v0.12
+    workload: inferencing
+spec:
+  restartPolicy: Never
+  containers:
+    - name: inferencer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DURATION_SEC
+          value: "900"
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== gpu-inferencing-job ===" && date
+          python - <<'PY'
+          import os, time, torch
+
+          DURATION = int(os.getenv("DURATION_SEC", "300"))
+          MATRIX   = 1024
+
+          torch.cuda.set_device(0)
+          torch.cuda.init()
+          torch.empty(1, device="cuda")
+
+          # "Model" weights — allocated once
+          w1 = torch.randn(MATRIX, MATRIX, device="cuda")
+          w2 = torch.randn(MATRIX, MATRIX, device="cuda")
+          # Persistent input buffer — reused, simulates inference batch
+          x  = torch.randn(MATRIX, MATRIX, device="cuda")
+
+          end_at = time.monotonic() + DURATION
+          step = 0
+          while time.monotonic() < end_at:
+              with torch.no_grad():
+                  y = torch.relu(x @ w1) @ w2            # kernels, no new big allocs
+              # Occasional H2D to refresh "input"
+              if step % 20 == 0:
+                  x.copy_(torch.randn(MATRIX, MATRIX))  # H2D into existing buffer
+              torch.cuda.synchronize()
+              step += 1
+              if step % 200 == 0:
+                  print(f"step={step}", flush=True)
+              time.sleep(0.02)
+          print(f"=== inferencing done  steps={step} ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: gpu-inferencing-claim

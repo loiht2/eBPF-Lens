@@ -1,0 +1,184 @@
+# Plan-6 S2 — memory zoo
+# Targets: cuda_memory_kind in {device, host, managed, pool} (08/09),
+#           memset async={true,false} (12), high-volume D2D copies (10).
+# Pure Driver-API workload — no PyTorch, no torch kernels.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s2-gpu
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "60"
+            memory: 2590Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s2-memory-zoo
+  namespace: qa-mp
+  labels:
+    plan: "6"
+    scenario: s2
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s2-memory-zoo ===" && date
+          python - <<'PY'
+          import ctypes, os, time, traceback
+
+          ITERS   = int(os.getenv("CUDA_TEST_ITERS",   "100"))
+          BUF_SZ  = int(os.getenv("CUDA_DRIVER_BYTES", str(4 * 1024 * 1024)))  # 4 MiB
+          D2D_CNT = int(os.getenv("D2D_COUNT",         "200"))
+
+          CUDA_SUCCESS = 0
+          CUdevice = ctypes.c_int; CUcontext = ctypes.c_void_p
+          CUstream = ctypes.c_void_p; CUdeviceptr = ctypes.c_uint64; CUresult = ctypes.c_int
+
+          def load_libcuda():
+              for n in ("libcuda.so.1", "libcuda.so"):
+                  try: return ctypes.CDLL(n)
+                  except OSError: pass
+              return None
+
+          def bind(cu, name, argtypes, restype=None):
+              try: fn = getattr(cu, name)
+              except AttributeError: return None
+              fn.restype = restype or CUresult; fn.argtypes = argtypes; return fn
+
+          def main():
+              cu = load_libcuda()
+              if not cu: print("no libcuda", flush=True); return
+
+              # ── init ──────────────────────────────────────────────────────
+              bind(cu, "cuInit",           [ctypes.c_uint])(0)
+              count = ctypes.c_int(0)
+              bind(cu, "cuDeviceGetCount", [ctypes.POINTER(ctypes.c_int)])(ctypes.byref(count))
+              if count.value < 1: print("no CUDA device", flush=True); return
+              ctx = CUcontext()
+              bind(cu, "cuCtxGetCurrent",  [ctypes.POINTER(CUcontext)])(ctypes.byref(ctx))
+              if not ctx.value:
+                  dev = CUdevice(0)
+                  bind(cu, "cuDeviceGet",   [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+                  bind(cu, "cuCtxCreate_v2",[ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+              print(f"CUDA init ok  ITERS={ITERS} BUF_SZ={BUF_SZ} D2D_CNT={D2D_CNT}", flush=True)
+              # Allow eBPF uprobes to attach before the fast loops start
+              WARMUP = int(os.getenv("WARMUP_SLEEP", "15"))
+              print(f"warmup sleep {WARMUP}s ...", flush=True); time.sleep(WARMUP)
+
+              # bind all needed functions
+              cuMemAlloc_v2     = bind(cu, "cuMemAlloc_v2",     [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+              cuMemAllocManaged = bind(cu, "cuMemAllocManaged",  [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, ctypes.c_uint])
+              cuMemAllocHost_v2 = bind(cu, "cuMemAllocHost_v2", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t])
+              cuMemHostAlloc    = bind(cu, "cuMemHostAlloc",     [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint])
+              cuMemAllocAsync   = bind(cu, "cuMemAllocAsync",    [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+              cuMemFree_v2      = bind(cu, "cuMemFree_v2",       [CUdeviceptr])
+              cuMemFreeHost     = bind(cu, "cuMemFreeHost",      [ctypes.c_void_p])
+              cuMemFreeAsync    = bind(cu, "cuMemFreeAsync",     [CUdeviceptr, CUstream])
+              cuMemsetD8_v2     = bind(cu, "cuMemsetD8_v2",      [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t])
+              cuMemsetD8Async   = bind(cu, "cuMemsetD8Async",    [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t, CUstream])
+              cuMemcpyDtoDAsync = bind(cu, "cuMemcpyDtoDAsync_v2",[CUdeviceptr, CUdeviceptr, ctypes.c_size_t, CUstream])
+              cuStreamCreate    = bind(cu, "cuStreamCreate",     [ctypes.POINTER(CUstream), ctypes.c_uint])
+              cuStreamSync      = bind(cu, "cuStreamSynchronize",[CUstream])
+              cuStreamDestroy   = bind(cu, "cuStreamDestroy_v2", [CUstream])
+
+              stream = CUstream()
+              cuStreamCreate(ctypes.byref(stream), 0)
+
+              # ── L1: device alloc/free (cuda_memory_kind="device") ─────────
+              print(f"L1: device  x{ITERS}", flush=True)
+              for _ in range(ITERS):
+                  d = CUdeviceptr(0)
+                  cuMemAlloc_v2(ctypes.byref(d), BUF_SZ)
+                  if d.value: cuMemFree_v2(d)
+
+              # ── L2: host alloc/free (cuda_memory_kind="host") ─────────────
+              print(f"L2: host    x{ITERS}", flush=True)
+              for _ in range(ITERS):
+                  h = ctypes.c_void_p()
+                  cuMemAllocHost_v2(ctypes.byref(h), BUF_SZ)
+                  if h.value: cuMemFreeHost(h)
+
+              # ── L3: managed alloc/free (cuda_memory_kind="managed") ───────
+              print(f"L3: managed x{ITERS}", flush=True)
+              for _ in range(ITERS):
+                  d = CUdeviceptr(0)
+                  cuMemAllocManaged(ctypes.byref(d), BUF_SZ, 1)   # CU_MEM_ATTACH_GLOBAL=1
+                  if d.value: cuMemFree_v2(d)
+
+              # ── L4: pool alloc/free via cuMemAllocAsync (cuda_memory_kind="pool") ──
+              print(f"L4: pool    x{ITERS}", flush=True)
+              if stream.value:
+                  for _ in range(ITERS):
+                      d = CUdeviceptr(0)
+                      cuMemAllocAsync(ctypes.byref(d), BUF_SZ, stream)
+                      if d.value: cuMemFreeAsync(d, stream)
+                  cuStreamSync(stream)
+
+              # ── persistent device buffers for memset + D2D ────────────────
+              src = CUdeviceptr(0); dst = CUdeviceptr(0)
+              cuMemAlloc_v2(ctypes.byref(src), BUF_SZ)
+              cuMemAlloc_v2(ctypes.byref(dst), BUF_SZ)
+
+              # ── L5: sync memset (cuda_memset_async="false") ───────────────
+              print(f"L5: memset sync  x{ITERS*2}", flush=True)
+              if src.value:
+                  for _ in range(ITERS * 2):
+                      cuMemsetD8_v2(src, 0, BUF_SZ)
+
+              # ── L6: async memset (cuda_memset_async="true") ───────────────
+              print(f"L6: memset async x{ITERS*2}", flush=True)
+              if src.value and stream.value:
+                  for _ in range(ITERS * 2):
+                      cuMemsetD8Async(src, 0, BUF_SZ, stream)
+                  cuStreamSync(stream)
+
+              # ── L7: D2D copies (cuda_memcpy_kind="MemcpyDeviceToDevice") ──
+              print(f"L7: D2D     x{D2D_CNT}", flush=True)
+              if src.value and dst.value and stream.value:
+                  for i in range(D2D_CNT):
+                      cuMemcpyDtoDAsync(dst, src, BUF_SZ, stream)
+                      if i % 50 == 0:
+                          cuStreamSync(stream)
+                          print(f"  D2D i={i}", flush=True)
+                  cuStreamSync(stream)
+
+              if dst.value: cuMemFree_v2(dst)
+              if src.value: cuMemFree_v2(src)
+              if stream.value: cuStreamDestroy(stream)
+              print("=== s2 finished ===", flush=True)
+
+          if __name__ == "__main__":
+              try: main()
+              except Exception: traceback.print_exc()
+          PY
+      env:
+        - name: CUDA_TEST_ITERS
+          value: "100"
+        - name: CUDA_DRIVER_BYTES
+          value: "4194304"    # 4 MiB
+        - name: D2D_COUNT
+          value: "200"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s2-gpu

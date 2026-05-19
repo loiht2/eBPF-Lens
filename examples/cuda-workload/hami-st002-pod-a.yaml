@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-st002-pod-a
+  namespace: test
+  labels:
+    job-type: plan3-st002
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== hami-st002-pod-a ===" && date
+          python - <<'PY'
+          import os, time, traceback
+          ITERATIONS = 60; SLEEP = 0.5; SIZE = 4096
+          try:
+              import torch
+              torch.cuda.set_device(0); torch.cuda.init(); torch.empty(1, device="cuda")
+              x = torch.randn(SIZE, SIZE, device="cuda"); y = torch.randn(SIZE, SIZE, device="cuda")
+              for i in range(ITERATIONS):
+                  z = torch.relu(x @ y)
+                  torch.cuda.synchronize()
+                  print(f"pod-a step={i} mean={z.mean().item():.4f}", flush=True)
+                  time.sleep(SLEEP)
+          except Exception: traceback.print_exc()
+          finally: print("=== pod-a finished ===", flush=True)
+          PY
+      env:
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: single-gpu-0

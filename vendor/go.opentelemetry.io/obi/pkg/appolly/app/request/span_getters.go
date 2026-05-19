@@ -269,7 +269,10 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 		}
 	case attr.HamiOOMMemKind:
 		getter = func(span *Span) attribute.KeyValue {
-			return attribute.Key(attr.HamiOOMMemKind).String(CudaMemKindName(span.SubType >> 24))
+			// Mask high byte to defend against sign-extension when SubType is negative
+			// (legacy data points written before the packing fix). Pair with the encoder
+			// in readGPUHamiOOMIntoSpan which already masks rc to 24 bits.
+			return attribute.Key(attr.HamiOOMMemKind).String(CudaMemKindName((span.SubType >> 24) & 0xFF))
 		}
 	case attr.HamiOOMErrorCode:
 		getter = func(span *Span) attribute.KeyValue {

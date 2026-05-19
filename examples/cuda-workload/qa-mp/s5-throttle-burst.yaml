@@ -1,0 +1,87 @@
+# Plan-6 S5 — throttle burst
+# Targets: gpu_hami_compute_throttle_duration_seconds with count >= 3000 and
+#           histogram spread across multiple buckets (le=0.001, 0.01, 0.1).
+# ResourceClaim: cores=20 (20% SM quota) — HAMi rate_limiter() stalls ~80% of launches.
+# No sleep between iterations — maximises throttle events per unit time.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: s5-gpu
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "20"     # 20% SM quota → heavy throttle
+            memory: 2590Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s5-throttle-burst
+  namespace: qa-mp
+  labels:
+    plan: "6"
+    scenario: s5
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trainer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== s5-throttle-burst ===" && date
+          python - <<'PY'
+          import os, time, traceback
+
+          ITERS  = int(os.getenv("CUDA_TEST_ITERS",       "1000"))
+          MATRIX = int(os.getenv("CUDA_TEST_MATRIX_SIZE", "8192"))
+
+          def main():
+              print(f"ITERS={ITERS} MATRIX={MATRIX}", flush=True)
+              try:
+                  import torch
+                  print(f"torch={torch.__version__} cuda={torch.cuda.is_available()}", flush=True)
+                  if not torch.cuda.is_available():
+                      print("no cuda — exiting"); return
+                  torch.cuda.set_device(0); torch.cuda.init()
+                  torch.empty(1, device="cuda")
+                  # Large matrix to generate many kernel launches per step.
+                  x = torch.randn(MATRIX, MATRIX, device="cuda")
+                  y = torch.randn(MATRIX, MATRIX, device="cuda")
+                  t0 = time.monotonic()
+                  for i in range(ITERS):
+                      # matmul + relu → multiple kernel launches each iteration
+                      z = torch.relu(x @ y)
+                      # Synchronize forces completion; each sync waits for throttled kernels.
+                      torch.cuda.synchronize()
+                      if i % 100 == 0:
+                          elapsed = time.monotonic() - t0
+                          print(f"step={i} elapsed={elapsed:.1f}s mean={z.mean().item():.4f}", flush=True)
+              except Exception: traceback.print_exc()
+              finally: print("=== s5 finished ===", flush=True)
+
+          if __name__ == "__main__": main()
+          PY
+      env:
+        - name: CUDA_TEST_ITERS
+          value: "1000"
+        - name: CUDA_TEST_MATRIX_SIZE
+          value: "8192"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: s5-gpu

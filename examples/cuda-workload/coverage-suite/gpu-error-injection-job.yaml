@@ -1,0 +1,121 @@
+# gpu-error-injection-job — drives both CUDA errors and HAMi OOM events.
+# Covers: gpu_cuda_errors_total (multiple cuda_function values),
+#         gpu_hami_oom_events_total (alloc beyond quota).
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-error-injection-claim
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "20"
+            memory: 256Mi   # small quota so OOM is easy to trigger
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-error-injection-job
+  namespace: qa-mp
+  labels:
+    suite: coverage-v0.12
+    workload: error-injection
+spec:
+  restartPolicy: Never
+  containers:
+    - name: error-injector
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DURATION_SEC
+          value: "900"
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== gpu-error-injection-job ===" && date
+          python - <<'PY'
+          import os, time, ctypes
+
+          DURATION = int(os.getenv("DURATION_SEC", "300"))
+          time.sleep(10)
+
+          cu = ctypes.CDLL("libcuda.so.1")
+          CUresult     = ctypes.c_int
+          CUcontext    = ctypes.c_void_p
+          CUdevice     = ctypes.c_int
+          CUdeviceptr  = ctypes.c_uint64
+          CUstream     = ctypes.c_void_p
+
+          def bind(name, args, restype=CUresult):
+              fn = getattr(cu, name); fn.argtypes = args; fn.restype = restype; return fn
+
+          bind("cuInit", [ctypes.c_uint])(0)
+          dev = CUdevice(0)
+          bind("cuDeviceGet", [ctypes.POINTER(CUdevice), ctypes.c_int])(ctypes.byref(dev), 0)
+          ctx = CUcontext()
+          bind("cuCtxCreate_v2", [ctypes.POINTER(CUcontext), ctypes.c_uint, CUdevice])(ctypes.byref(ctx), 0, dev)
+          stream = CUstream()
+          bind("cuStreamCreate", [ctypes.POINTER(CUstream), ctypes.c_uint])(ctypes.byref(stream), 0)
+          print("CUDA init ok", flush=True)
+
+          # ── error path 1: cuLaunchKernel with NULL func handle (rc=400) ──
+          launch = bind("cuLaunchKernel",
+              [ctypes.c_void_p,
+               ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,    # grid
+               ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,    # block
+               ctypes.c_uint, CUstream,
+               ctypes.c_void_p, ctypes.c_void_p])
+
+          # ── error path 2: cuMemcpyHtoDAsync_v2 oversized (rc=1) ──
+          alloc = bind("cuMemAlloc_v2", [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t])
+          free_ = bind("cuMemFree_v2", [CUdeviceptr])
+          htod  = bind("cuMemcpyHtoDAsync_v2",
+              [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t, CUstream])
+          host_buf = (ctypes.c_byte * (4 * 1024 * 1024))()
+          host_v   = ctypes.cast(host_buf, ctypes.c_void_p)
+
+          # ── error path 3: cuMemsetD8_v2 oversized (rc=1) ──
+          memset = bind("cuMemsetD8_v2", [CUdeviceptr, ctypes.c_ubyte, ctypes.c_size_t])
+
+          # ── HAMi OOM path: oversized alloc beyond 256Mi quota (rc=2) ──
+          alloc_async = bind("cuMemAllocAsync",
+              [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t, CUstream])
+
+          end_at = time.monotonic() + DURATION
+          tick = 0
+          while time.monotonic() < end_at:
+              # Cycle through the error paths
+              launch(ctypes.c_void_p(0), 1,1,1, 1,1,1, 0, stream, None, None)  # rc=400
+
+              p = CUdeviceptr(0)
+              if alloc(ctypes.byref(p), 4 * 1024 * 1024) == 0:
+                  htod(p, host_v, 100 * 1024 * 1024, stream)   # oversized → rc=1
+                  memset(p, 0, 100 * 1024 * 1024)              # oversized → rc=1
+                  free_(p)
+
+              # OOM: ask for 1 GiB on a 256 Mi quota
+              big = CUdeviceptr(0)
+              alloc_async(ctypes.byref(big), 1024 * 1024 * 1024, stream)
+              if big.value:
+                  bind("cuMemFreeAsync", [CUdeviceptr, CUstream])(big, stream)
+
+              tick += 1
+              if tick % 20 == 0:
+                  print(f"tick={tick}", flush=True)
+              time.sleep(0.5)
+          print(f"=== error-injection done  ticks={tick} ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: gpu-error-injection-claim

@@ -1,0 +1,89 @@
+# gpu-cuda-graphs-job — captures a CUDA Graph and replays it many times.
+# Covers: gpu_cuda_graph_launch_calls_total — the only workload that fires cuGraphLaunch.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-cuda-graphs-claim
+  namespace: qa-mp
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        allocationMode: ExactCount
+        count: 1
+        deviceClassName: hami-core-gpu.project-hami.io
+        capacity:
+          requests:
+            cores: "20"
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-cuda-graphs-job
+  namespace: qa-mp
+  labels:
+    suite: coverage-v0.12
+    workload: cuda-graphs
+spec:
+  restartPolicy: Never
+  containers:
+    - name: graph-replayer
+      image: 192.168.6.123:30080/loiht2/train-tester:v1.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DURATION_SEC
+          value: "900"
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          echo "=== gpu-cuda-graphs-job ===" && date
+          python - <<'PY'
+          import os, time, torch
+
+          DURATION = int(os.getenv("DURATION_SEC", "300"))
+          MATRIX   = 512
+
+          torch.cuda.set_device(0)
+          torch.cuda.init()
+          torch.empty(1, device="cuda")
+
+          a = torch.randn(MATRIX, MATRIX, device="cuda")
+          b = torch.randn(MATRIX, MATRIX, device="cuda")
+          out = torch.empty_like(a)
+
+          # PyTorch requires a warm-up stream before capture
+          s = torch.cuda.Stream()
+          s.wait_stream(torch.cuda.current_stream())
+          with torch.cuda.stream(s):
+              for _ in range(3):
+                  out = torch.relu(a @ b)
+          torch.cuda.current_stream().wait_stream(s)
+
+          # Capture the graph
+          g = torch.cuda.CUDAGraph()
+          with torch.cuda.graph(g):
+              out = torch.relu(a @ b)
+          print("graph captured", flush=True)
+
+          end_at = time.monotonic() + DURATION
+          replays = 0
+          while time.monotonic() < end_at:
+              # Each .replay() emits cuGraphLaunch on the libcuda probe
+              for _ in range(50):
+                  g.replay()
+              torch.cuda.synchronize()
+              replays += 50
+              if replays % 1000 == 0:
+                  print(f"replays={replays}", flush=True)
+              time.sleep(0.05)
+          print(f"=== cuda-graphs done  replays={replays} ===", flush=True)
+          PY
+      resources:
+        claims:
+          - name: hami-gpu
+  resourceClaims:
+    - name: hami-gpu
+      resourceClaimName: gpu-cuda-graphs-claim

@@ -6,7 +6,15 @@
 
 **Base:** Fork of Grafana OBI/Beyla. Vendored sources live in [.obi-src/](.obi-src/) and mirrored into [vendor/go.opentelemetry.io/obi/](vendor/go.opentelemetry.io/obi/).
 
-**Current state (branch `feature/add-GPU-metrics`):** 16 CUDA metrics implemented via uprobes on `libcuda.so` (CUDA Driver API) plus 11 HAMi cache gauges from polling `cudevshr.cache` shared-memory files.
+**Current state (branch `feature/add-GPU-metrics`, image `v0.10-followups-20260517-1432`):**
+
+- **17 `gpu_cuda_*` metrics** from uprobes on `libcuda.so` (CUDA Driver API): kernel launch calls / duration / grid / block / **shared-memory** (new in v0.10), graph launch, memory alloc / free (bytes + calls, **success-only since v0.9**), memory copies (incl. peer-to-peer), memset, stream / device / event sync durations, CUDA errors.
+- **2 `gpu_hami_*` event metrics** from uprobes on `libvgpu.so`: `gpu_hami_compute_throttle_duration_seconds` (rate-limiter stall), `gpu_hami_oom_events_total` (HAMi quota OOM).
+- **11 `gpu_hami_proc_*` / `gpu_hami_quota_*` gauges** from the userspace HAMi cache poller (reads `{uuid}.cache` every 1 s — sources include NVML utilization, libvgpu memory accounting, and DRA quota values).
+
+Total: **19 eBPF-derived metrics + 11 HAMi-cache-derived gauges = 30 metrics**.
+
+Probe count: **59 BPF programs** (uprobes/uretprobes) — 52 on `libcuda.so` (26 entry + 26 exit), 7 on `libvgpu.so` (HAMi-only mode). Includes `cuLaunchKernelEx` (PyTorch 2.4+ / NCCL 2.20+) and entry+exit pairs for every free / memcpy / memset / peer-copy function. Since v0.12 the exit pairs also emit `gpu_cuda_errors_total` when `rc != CUDA_SUCCESS`, so the Errors panel covers 25 distinct Driver API functions (up from 13).
 
 ### Two supported deployment modes (mutually exclusive)
 
@@ -36,7 +44,7 @@ app → libvgpu.so (HAMi shim, intercepts Driver API, enforces quota)
 ### Key architectural facts
 
 - **Probes attach to `libcuda.so`.** Every CUDA workload loads it. Probes fire after HAMi's quota check (when HAMi is present), so counts reflect calls that reached the driver.
-- **Confirmed working (2026-05-07, image `v0.5-bpf-alloc-fix`):** NVIDIA MIG DRA on A30 GPU (MIG `1g.6gb` slice). All 16 `gpu_cuda_*` metrics confirmed, including `gpu_cuda_errors_total{cuda_error_code="2",cuda_function="cuMemAlloc_v2"}` from intentional OOM.
+- **Confirmed working (2026-05-17, image `v0.10-followups-20260517-1432`):** HAMi DRA on A30 GPU (single MIG slice; HAMi-core software quota). All 17 `gpu_cuda_*` metrics + 2 `gpu_hami_*` event metrics + 11 cache-poller gauges produce data through S1–S6 QA scenarios. Plan 7 + 4 follow-ups applied; `cuLaunchKernelEx` probed; entry+exit pairs for free/memcpy/memset/peer-copy; HAMi OOM packing fixed; BPF ringbuf at 8 MiB; new `gpu_cuda_kernel_shared_memory_bytes` histogram.
 - **`instrumentations: "all"` is silently ignored.** `InstrumentationALL = "*"`. Use `instrumentations: ["*"]`.
 - BPF source: [.obi-src/bpf/gpuevent/cuda.c](.obi-src/bpf/gpuevent/cuda.c), generated via `bpf2go`; userspace reader: [.obi-src/pkg/internal/ebpf/gpuevent/gpuevent.go](.obi-src/pkg/internal/ebpf/gpuevent/gpuevent.go).
 - Exporters: OTEL [pkg/export/otel/metrics.go](.obi-src/pkg/export/otel/metrics.go); Prometheus [pkg/export/prom/prom.go](.obi-src/pkg/export/prom/prom.go).
@@ -59,6 +67,43 @@ When a freed pointer was allocated *before* the eBPF probe attached, the BPF `cu
 
 **Bug 4 — Failed allocations counted in `gpu_cuda_memory_allocations_bytes_total`.**
 The BPF `cuda_alloc_entry_impl` emitted the malloc event at probe entry, *before* the call returned. An OOM allocation of `(1<<63)-1` bytes was counted as `9.22e+18` bytes allocated. Fix: moved event emission from `cuda_alloc_entry_impl` to `cuda_alloc_exit_impl`, only emitting when the return code is `CUDA_SUCCESS`. Failed allocations now produce only `gpu_cuda_errors_total`, never an inflated allocation counter ([cuda.c](.obi-src/bpf/gpuevent/cuda.c)).
+
+### Plan 7 + follow-ups (2026-05-17, images `v0.9` → `v0.10`)
+
+Full plan at [my-folder/docs/plan/plan-7-fix-bpf-reviewer-issues.md](my-folder/docs/plan/plan-7-fix-bpf-reviewer-issues.md). The 8 reviewer-flagged issues + 4 follow-ups were applied:
+
+**Plan 7 (image `v0.9-reviewer-fixes-20260517-1057`):**
+- `gpu_alloc_sizes` key changed from `u64` → `(ptr, tgid)` composite to prevent cross-process pointer collisions
+- Free / memcpy / memset / peer-copy probes converted from entry-only to entry+uretprobe; event emitted only on `rc == CUDA_SUCCESS`
+- Stream / event handles captured in event structs (internal; not exposed as labels to avoid cardinality explosion)
+- `cuLaunchKernelEx` probed (CUDA 11.4+, PyTorch 2.4+, NCCL 2.20+)
+- `cuLaunchKernel` probe reads `sharedMemBytes` + `hStream` from stack args 8 & 9
+- HAMi stale-entry TTL: discard `hami_launch_entry` timestamps older than 1 s so a rejected libvgpu launch can't leak into a later real launch's throttle computation
+- HAMi `cuMemAllocAsync` mem_kind corrected from DEVICE → POOL
+- Grid/block products computed as `uint64(uint32(x))*uint64(...)` to prevent int32 multiplication overflow
+
+**v0.10 follow-ups (image `v0.10-followups-20260517-1432`):**
+- HAMi OOM `SubType` packing bug fixed: was `int(rc)` sign-extending negative HAMi returns and corrupting mem_kind bits. Now `int(uint32(rc)) & 0xFFFFFF` packs + `(SubType >> 24) & 0xFF` unpacks. Effect: `cuMemAllocAsync` OOM events now show `hami_oom_mem_kind="pool"` instead of `"unknown"`.
+- BPF ringbuf grown 4 MiB → 8 MiB ([gpu_ringbuf.h](.obi-src/bpf/gpuevent/gpu_ringbuf.h)). Eliminated S3 burst drops (was 25/40, now 40/40 events captured).
+- New histogram `gpu_cuda_kernel_shared_memory_bytes` exposes the previously internal `cuda_kernel_launch_t.shared_mem_bytes` field — high P95 → shared-memory-bound kernels.
+- S3 coverage check threshold relaxed from ≥2 to ≥1 tuple (defense in depth alongside the ringbuf increase).
+
+### v0.12 — `gpu_cuda_errors_total` coverage expansion (2026-05-19)
+
+Before v0.12, `gpu_cuda_errors_total` only counted failures from **13 Driver API functions** (kernel launches, allocs, syncs, `cuMemHostRegister`, `cuEventElapsedTime`). The free / memcpy / memset / peer-copy / graph-launch uretprobes were **emit-on-success-only** — a `cuMemFree_v2` returning `CUDA_ERROR_INVALID_VALUE`, a `cuMemcpyHtoDAsync_v2` failing with a bad pointer, or a `cuGraphLaunch` failing with `CUDA_ERROR_INVALID_HANDLE` would not show up anywhere in metrics.
+
+Changes:
+- [cuda.h](.obi-src/bpf/gpuevent/cuda.h): added 11 new `CUDA_FUNC_*` IDs (15-25) for: 3 free variants, `cuMemHostUnregister` (re-uses pre-existing ID 13 which was previously defined but unused), 3 memcpy variants, 2 peer-copy variants, 2 memset variants, `cuGraphLaunch`.
+- [cuda.c](.obi-src/bpf/gpuevent/cuda.c): the 4 shared exit helpers (`cuda_free_exit_impl`, `cu_memcpy_exit_impl`, `cu_memcpy_peer_exit_impl`, `cu_memset_exit_impl`) now take a `u8 func_id` parameter and call `cuda_error_impl(ctx, func_id, rc)` on the `rc != 0` branch. Each of the 11 SEC uretprobe callers passes its specific `CUDA_FUNC_*` constant.
+- New `SEC("uretprobe/cuGraphLaunch")` — error-only (success path stays at the entry uprobe to keep `gpu_cuda_graph_launch_calls_total` an attempt counter, same convention as the kernel launch metric).
+- [metric_attributes.go](.obi-src/pkg/appolly/app/request/metric_attributes.go): `CudaFuncName` switch extended with cases 15-25 so the `cuda_function` label resolves to the real Driver API name (was returning `"unknown"` for these IDs before).
+- [gpuevent.go](.obi-src/pkg/internal/ebpf/gpuevent/gpuevent.go): the `cuGraphLaunch` probe spec now wires `End: ObiCuGraphLaunchExit` (was Start-only).
+
+Result: errors panel now distinguishes failures across **25 distinct `cuda_function` values** (every probed CUDA Driver API function except `cuMemHostUnregister`-of-an-untracked-pointer, which produces no `inflight` state to drive the error emit). A failed `cuMemcpyDtoH` now produces a `gpu_cuda_errors_total{cuda_function="cuMemcpyDtoHAsync_v2", cuda_error_code="..."}` increment instead of silently dropping.
+
+**HAMi short-circuit limitation (only-HAMi mode):** `libvgpu.so` validates many arguments (pointer book, quota tracking) BEFORE delegating to libcuda. When a call fails libvgpu's own check (e.g. `cuMemFree_v2(0xDEADBEEF)`, `cuMemFreeAsync` on a double-freed pointer), libvgpu returns its own error code (often `rc=-1`) **without invoking libcuda** — the libcuda uretprobe never fires, so no `gpu_cuda_errors_total` increment. v0.12 still captures errors that survive to libcuda (oversized memcpy/memset counts, freed-handle uses that libvgpu doesn't track, invalid kernel/graph handles). The HAMi short-circuit is a HAMi-design limitation; capturing those failures would require probing libvgpu directly (out of scope for v0.12).
+
+End-to-end verification (2026-05-19, image `v0.12-error-coverage-20260519-0147`, A30 HAMi DRA): [s8-new-probes-test.yaml](examples/cuda-workload/qa-mp/s8-new-probes-test.yaml) confirms all v0.11 metrics still emit (`gpu_cuda_event_elapsed_seconds_bucket` count=29 for 30 measurement cycles). [s3-cuda-errors.yaml](examples/cuda-workload/qa-mp/s3-cuda-errors.yaml) regression-checks the existing error path (`cuLaunchKernel rc=400` × 30, `cuLaunchCooperativeKernel rc=400` × 10). [s9-v012-error-coverage.yaml](examples/cuda-workload/qa-mp/s9-v012-error-coverage.yaml) exercises the new v0.12 paths — observed `gpu_cuda_errors_total{cuda_function="cuMemcpyHtoDAsync_v2", cuda_error_code="1"} 10` from oversized HtoD copy, a label combination that did not exist pre-v0.12.
 
 ### HAMi layout (under [HAMi/](HAMi/))
 
