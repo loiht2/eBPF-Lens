@@ -83,7 +83,10 @@ volumes:
   - name: proc
     hostPath:
       path: /proc
-  # vGPU Cache FS — HAMi shared-region files (DRA mode)
+  # vGPU Cache FS — HAMi shared-region files (only-HAMi DRA mode).
+  # Used ONLY for gpu_uuid labelling (reads uuids[0] from {uuid}.cache).
+  # Optional: with hostPID + privileged the agent can also reach these via
+  # /proc/1/root. Not needed at all in only-MIG mode.
   - name: vgpu-cache
     hostPath:
       path: /usr/local/vgpu/containers
@@ -113,19 +116,21 @@ config:
       port: 9400
       path: /metrics
       instrumentations:
-        - all
-      hami_container_dir: /var/lib/vgpu/containers
+        - "*"
     attributes:
       kubernetes:
         enable: true
 ```
 
-> **To disable HAMi metrics** (eBPF-only, no HAMi installed):
-> 1. Set `hami_container_dir: "-"` under `config.data.prometheus_export`.
-> 2. Remove the `vgpu-cache` volume and volumeMount entries.
+> **Note:** use `instrumentations: ["*"]` — `instrumentations: [all]` is silently
+> ignored (`InstrumentationALL = "*"`), which disables all GPU metrics.
 >
-> The `gpu_cuda_*` metrics from eBPF uprobes work independently of HAMi and
-> are not affected by this setting.
+> **HAMi vs MIG:** the `gpu_cuda_*` metrics come from `libcuda.so` uprobes and
+> work in both modes. The 2 `gpu_hami_*` event metrics come from `libvgpu.so`
+> uprobes and appear only in only-HAMi mode. `gpu_uuid` labelling reads the HAMi
+> `.cache` file (only-HAMi) or the `MIG-` env var (only-MIG); no agent config is
+> needed for it. The userspace cache-poller config (`hami_container_dir`) was
+> removed in the eBPF-only refocus.
 
 ---
 
@@ -174,19 +179,14 @@ gpu_cuda_device_sync_duration_seconds
 gpu_cuda_event_sync_duration_seconds
 gpu_cuda_errors_total                     (only when CUDA API calls fail)
 
-# HAMi metrics (only when hami_container_dir is set and HAMi is running)
-gpu_hami_quota_memory_limit_bytes
-gpu_hami_quota_sm_limit_percent
-gpu_hami_proc_memory_context_bytes
-gpu_hami_proc_memory_module_bytes
-gpu_hami_proc_memory_buffer_bytes
-gpu_hami_proc_memory_total_bytes
-gpu_hami_proc_memory_nvml_bytes
-gpu_hami_proc_sm_utilization_percent
-gpu_hami_proc_enc_utilization_percent
-gpu_hami_proc_dec_utilization_percent
-gpu_hami_proc_status
+# HAMi eBPF event metrics (only-HAMi mode; from libvgpu.so uprobes)
+gpu_hami_oom_events_total                 (HAMi quota-denied allocations)
+gpu_hami_compute_throttle_duration_seconds (HAMi rate_limiter stalls)
 ```
+
+> The 11 `gpu_hami_proc_*` / `gpu_hami_quota_*` userspace cache-poller gauges
+> were removed in the 2026-05-22 eBPF-only refocus. All remaining metrics are
+> derived purely from eBPF probes on `libcuda.so` and `libvgpu.so`.
 
 ---
 
@@ -245,8 +245,7 @@ All config fields can also be set via environment variables:
 |---|---|---|
 | `ebpf.instrument_cuda` | `OTEL_EBPF_INSTRUMENT_CUDA` | `on` |
 | `prometheus_export.port` | (set in Helm values) | `9400` |
-| `prometheus_export.instrumentations` | `OTEL_EBPF_PROMETHEUS_INSTRUMENTATIONS` | `all` or `gpu` |
-| `prometheus_export.hami_container_dir` | `OTEL_EBPF_HAMI_CONTAINER_DIR` | `/var/lib/vgpu/containers` or `-` |
+| `prometheus_export.instrumentations` | `OTEL_EBPF_PROMETHEUS_INSTRUMENTATIONS` | `["*"]` |
 
 ---
 

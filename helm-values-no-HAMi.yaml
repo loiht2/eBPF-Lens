@@ -43,7 +43,6 @@ config:
       path: /metrics
       instrumentations:
         - "*"
-      hami_container_dir: "-"
     attributes:
       kubernetes:
         enable: true

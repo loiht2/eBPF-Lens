@@ -4,15 +4,16 @@
 
 **Goal:** Build an eBPF-based, low-overhead GPU observability tool for ML/AI workloads on Kubernetes. The collected metrics feed a **scheduler recommendation system** that right-sizes per-workload GPU memory and compute quotas.
 
-**Base:** Fork of Grafana OBI/Beyla. Vendored sources live in [.obi-src/](.obi-src/) and mirrored into [vendor/go.opentelemetry.io/obi/](vendor/go.opentelemetry.io/obi/).
+**Scope (refocused 2026-05-22):** This project exposes **eBPF-derived metrics only** — everything comes from uprobes/uretprobes on `libcuda.so` (CUDA Driver API) and `libvgpu.so` (HAMi shim). The userspace HAMi cache poller and its 11 `gpu_hami_proc_*` / `gpu_hami_quota_*` gauges (the only non-eBPF data source) were **removed**. `gpu_uuid` enrichment still reads the HAMi `.cache` file for labelling (it is enrichment, not a metric), so HAMi + MIG dual fractional-GPU support is retained.
 
-**Current state (branch `feature/add-GPU-metrics`, image `v0.10-followups-20260517-1432`):**
+**Base:** Fork of Grafana OBI/Beyla. Vendored sources live in [.obi-src/](.obi-src/) and mirrored into [vendor/go.opentelemetry.io/obi/](vendor/go.opentelemetry.io/obi/). The non-GPU Beyla functionality (HTTP/SQL/network/language tracers) is left in the tree but unused at runtime — the agent runs GPU-only via config — so the fork stays rebaseable on upstream OBI.
+
+**Current state (branch `feature/add-GPU-metrics`):**
 
 - **17 `gpu_cuda_*` metrics** from uprobes on `libcuda.so` (CUDA Driver API): kernel launch calls / duration / grid / block / **shared-memory** (new in v0.10), graph launch, memory alloc / free (bytes + calls, **success-only since v0.9**), memory copies (incl. peer-to-peer), memset, stream / device / event sync durations, CUDA errors.
 - **2 `gpu_hami_*` event metrics** from uprobes on `libvgpu.so`: `gpu_hami_compute_throttle_duration_seconds` (rate-limiter stall), `gpu_hami_oom_events_total` (HAMi quota OOM).
-- **11 `gpu_hami_proc_*` / `gpu_hami_quota_*` gauges** from the userspace HAMi cache poller (reads `{uuid}.cache` every 1 s — sources include NVML utilization, libvgpu memory accounting, and DRA quota values).
 
-Total: **19 eBPF-derived metrics + 11 HAMi-cache-derived gauges = 30 metrics**.
+Total: **19 eBPF-derived metrics** (all probe-derived; no userspace polling).
 
 Probe count: **59 BPF programs** (uprobes/uretprobes) — 52 on `libcuda.so` (26 entry + 26 exit), 7 on `libvgpu.so` (HAMi-only mode). Includes `cuLaunchKernelEx` (PyTorch 2.4+ / NCCL 2.20+) and entry+exit pairs for every free / memcpy / memset / peer-copy function. Since v0.12 the exit pairs also emit `gpu_cuda_errors_total` when `rc != CUDA_SUCCESS`, so the Errors panel covers 25 distinct Driver API functions (up from 13).
 
@@ -44,7 +45,7 @@ app → libvgpu.so (HAMi shim, intercepts Driver API, enforces quota)
 ### Key architectural facts
 
 - **Probes attach to `libcuda.so`.** Every CUDA workload loads it. Probes fire after HAMi's quota check (when HAMi is present), so counts reflect calls that reached the driver.
-- **Confirmed working (2026-05-17, image `v0.10-followups-20260517-1432`):** HAMi DRA on A30 GPU (single MIG slice; HAMi-core software quota). All 17 `gpu_cuda_*` metrics + 2 `gpu_hami_*` event metrics + 11 cache-poller gauges produce data through S1–S6 QA scenarios. Plan 7 + 4 follow-ups applied; `cuLaunchKernelEx` probed; entry+exit pairs for free/memcpy/memset/peer-copy; HAMi OOM packing fixed; BPF ringbuf at 8 MiB; new `gpu_cuda_kernel_shared_memory_bytes` histogram.
+- **Confirmed working (2026-05-17, image `v0.10-followups-20260517-1432`):** HAMi DRA on A30 GPU (single MIG slice; HAMi-core software quota). All 17 `gpu_cuda_*` metrics + 2 `gpu_hami_*` event metrics produce data through S1–S6 QA scenarios. Plan 7 + 4 follow-ups applied; `cuLaunchKernelEx` probed; entry+exit pairs for free/memcpy/memset/peer-copy; HAMi OOM packing fixed; BPF ringbuf at 8 MiB; new `gpu_cuda_kernel_shared_memory_bytes` histogram. (The 11 cache-poller gauges that produced data in this run were removed in the 2026-05-22 eBPF-only refocus.)
 - **`instrumentations: "all"` is silently ignored.** `InstrumentationALL = "*"`. Use `instrumentations: ["*"]`.
 - BPF source: [.obi-src/bpf/gpuevent/cuda.c](.obi-src/bpf/gpuevent/cuda.c), generated via `bpf2go`; userspace reader: [.obi-src/pkg/internal/ebpf/gpuevent/gpuevent.go](.obi-src/pkg/internal/ebpf/gpuevent/gpuevent.go).
 - Exporters: OTEL [pkg/export/otel/metrics.go](.obi-src/pkg/export/otel/metrics.go); Prometheus [pkg/export/prom/prom.go](.obi-src/pkg/export/prom/prom.go).
@@ -139,7 +140,7 @@ In **only-MIG mode**, no `cudevshr.cache` file exists; the HAMi poller is a no-o
 
 - GPU-side kernel execution time — requires CUPTI.
 - SM occupancy / warp efficiency / memory bandwidth — GPU hardware counters.
-- Actual GPU SM utilization % — use **NVML** (only-MIG) or **`cudevshr.cache` SM util field** (only-HAMi).
+- Actual GPU SM utilization % — needs **NVML** (only-MIG) or the **`cudevshr.cache` SM util field** (only-HAMi). Both are out of scope after the eBPF-only refocus (the cache poller that surfaced the latter was removed); use `compute_throttle_ratio` + kernel launch rate as eBPF proxies instead.
 - CUPTI is incompatible with production (single-client, high overhead); **do not use** for this project.
 
 ---
@@ -153,9 +154,9 @@ Work is phased; each phase is independently shippable.
 - BPF probes targeting `libcuda.so` (Driver API) for universal CUDA-workload coverage.
 - Bug fixes 1–4 (see above) applied and verified.
 
-### Phase 1 — HAMi cache poller (DONE)
+### Phase 1 — HAMi cache poller (REMOVED 2026-05-22)
 
-11 `gpu_hami_*` gauges from `shared_region_t`, polling every 1 s. See [docs/metrics/hami-ebpf-metrics.md](my-folder/docs/metrics/hami-ebpf-metrics.md).
+Previously emitted 11 `gpu_hami_proc_*` / `gpu_hami_quota_*` gauges from `shared_region_t`, polling every 1 s. **Removed in the eBPF-only refocus** — the poller was the project's only non-eBPF data source. The same `shared_region_t` parser ([sharedregion.go](.obi-src/pkg/internal/hami/sharedregion.go)) is retained, but now serves only `gpu_uuid` enrichment (reading `uuids[0]` from the `.cache` file), not metrics.
 
 ### Phase 2 — HAMi-specific BPF uprobes on `libvgpu.so` (NEXT, only-HAMi mode)
 
@@ -186,13 +187,13 @@ For each workload (pod), compute a feature vector over its lifetime:
 | Feature | Source metric | Purpose |
 |---|---|---|
 | `peak_memory_live_bytes` | `alloc_bytes - free_bytes` max | Memory quota sizing |
-| `avg_sm_utilization_pct` | `hami_proc_sm_utilization_percent` mean | SM quota sizing (only-HAMi) |
-| `p99_sm_utilization_pct` | same, P99 | Burst headroom |
-| `compute_throttle_ratio` | `hami_compute_throttle_duration / kernel_launch_duration` | Under-provisioned flag |
+| `compute_throttle_ratio` | `gpu_hami_compute_throttle_duration / kernel_launch_duration` | Under-provisioned flag (only-HAMi, eBPF) |
 | `h2d_traffic_per_launch` | `memcpy_bytes{H2D} / kernel_launch_calls` | I/O-bound flag |
 | `device_sync_p99` | `device_sync_duration` P99 | Backpressure flag |
 | `multi_gpu_flag` | `peer_copies_bytes > 0` | Multi-GPU workload |
-| `oom_events_total` | `errors{code=2} + hami_oom_total` | Under-sized memory |
+| `oom_events_total` | `errors{code=2} + gpu_hami_oom_events_total` | Under-sized memory |
+
+> **Note (eBPF-only refocus):** the former SM-utilization features (`avg/p99_sm_utilization_pct`, sourced from the removed `gpu_hami_proc_sm_utilization_percent` poller gauge) are no longer collected — true SM utilization % is an NVML/hardware-counter value that eBPF cannot deliver (see "What eBPF alone cannot deliver" above). The recommender now infers compute pressure from `compute_throttle_ratio` + kernel launch rate/latency instead.
 
 Export these as long-window aggregates. Feed to an offline ML regressor that maps (workload profile → recommended `{gpumem, gpucores}`).
 
