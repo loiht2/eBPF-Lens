@@ -1884,6 +1884,582 @@
       ],
       "title": "HAMi throttle P95/P99",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 118
+      },
+      "id": 50,
+      "panels": [],
+      "title": "4. Synchronization Latency",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host-thread wait time in cuStreamSynchronize \u2014 how long the CPU blocked for a specific stream to drain. High values indicate GPU backpressure on that stream.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 0,
+        "y": 119
+      },
+      "id": 51,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_stream_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "hide": false,
+          "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_stream_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "CUDA Stream Sync Latency P95/P99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host-thread wait time in cuCtxSynchronize / cuDeviceSynchronize \u2014 full-device barrier. Sustained high P99 is a strong backpressure signal (see Phase 4 device_sync_p99).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 12,
+        "y": 119
+      },
+      "id": 52,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_device_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "hide": false,
+          "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_device_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "CUDA Device Sync Latency P95/P99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host-thread wait time in cuEventSynchronize \u2014 how long the CPU blocked waiting on a recorded CUDA event.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 0,
+        "y": 132
+      },
+      "id": 53,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_event_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "hide": false,
+          "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_event_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "CUDA Event Sync Latency P95/P99",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 145
+      },
+      "id": 54,
+      "panels": [],
+      "title": "5. Kernel Launch Dimensions",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Distribution of grid size (gridX*gridY*gridZ = total CUDA blocks) per kernel launch. P95/P99 reveal the largest kernels scheduled. Source: gpu_cuda_kernel_grid_size_total (Prometheus histogram).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 146
+      },
+      "id": 55,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_grid_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "hide": false,
+          "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_grid_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Kernel Grid Size P95/P99 (blocks/launch)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Distribution of block size (blockX*blockY*blockZ = threads per block) per kernel launch. Source: gpu_cuda_kernel_block_size_total (Prometheus histogram).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 146
+      },
+      "id": 56,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_block_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "hide": false,
+          "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_block_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Kernel Block Size P95/P99 (threads/launch)",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -1961,5 +2537,5 @@
   "timezone": "browser",
   "title": "eBPF Observability Test",
   "uid": "adtt974_test",
-  "version": 8
+  "version": 10
 }
