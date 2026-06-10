@@ -2,8 +2,8 @@
 
 image:
   registry: docker.io
-  repository: loihoangthanh1411/ebpf-lens 
-  tag: v0.4-driver-api
+  repository: yourDockerHubUsername/beyla
+  tag: gpu-dev-v1
 
 # preset: application sets hostPID: true — required for /proc PID discovery
 preset: application
@@ -19,15 +19,25 @@ volumes:
   - name: proc
     hostPath:
       path: /proc
+  # vGPU Cache FS — HAMi shared-region files (only-HAMi DRA mode).
+  # Used ONLY for gpu_uuid labelling (reads uuids[0] from {uuid}.cache).
+  # Optional: with hostPID + privileged the agent can also reach these via
+  # /proc/1/root. Not needed at all in only-MIG mode.
+  - name: vgpu-cache
+    hostPath:
+      path: /usr/local/vgpu/containers
 
 volumeMounts:
   - name: proc
     mountPath: /proc
     readOnly: true
+  - name: vgpu-cache
+    mountPath: /var/lib/vgpu/containers
+    readOnly: true
 
 # Schedule only on GPU nodes; tolerate the nvidia.com/gpu taint
-# nodeSelector:
-#   nvidia.com/gpu.present: "true"
+nodeSelector:
+  nvidia.com/gpu.present: "true"
 
 tolerations:
   - key: nvidia.com/gpu
@@ -37,7 +47,7 @@ tolerations:
 config:
   data:
     ebpf:
-      instrument_cuda: "on"
+      instrument_cuda: on
     prometheus_export:
       port: 9400
       path: /metrics
