@@ -21,7 +21,7 @@ TEST_OUTPUT ?= ./testoutput
 IMG_REGISTRY ?= docker.io
 # Set your registry username. You mustn't use 'grafana' for manual pushing.
 IMG_ORG ?= grafana
-IMG_NAME ?= beyla
+IMG_NAME ?= ebpf-lens
 
 # Container image creation
 VERSION ?= dev
