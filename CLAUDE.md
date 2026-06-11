@@ -8,6 +8,12 @@
 
 **Base:** Fork of Grafana OBI/Beyla. Vendored sources live in [.obi-src/](.obi-src/) and mirrored into [vendor/go.opentelemetry.io/obi/](vendor/go.opentelemetry.io/obi/). The non-GPU Beyla functionality (HTTP/SQL/network/language tracers) is left in the tree but unused at runtime — the agent runs GPU-only via config — so the fork stays rebaseable on upstream OBI.
 
+**Repo & submodule remotes (2026-06-11):**
+- Parent repo `origin` → `https://github.com/loiht2/eBPF-Lens.git`.
+- `.obi-src` submodule → `https://github.com/loiht2/eBPF-Lens-core.git` (fork of upstream OBI), tracking branch **`feature/add-GPU-metrics`** (recorded in [.gitmodules](.gitmodules) via `branch =`). The pinned commit is the clean eBPF-only line; the fork's `backup/feature-add-GPU-metrics-15f5a6c` branch holds the older pre-refocus line that had `grafana:main` merged in (kept for a future upstream re-sync).
+- **To update the `.obi-src` pin:** commit in `.obi-src`, push to `feature/add-GPU-metrics` on `eBPF-Lens-core`, then in the parent `git add .obi-src` + commit the new gitlink.
+- **Commit-message convention:** do **not** append `Co-Authored-By:` trailers in either repo.
+
 **Current state (branch `feature/add-GPU-metrics`):**
 
 - **17 `gpu_cuda_*` metrics** from uprobes on `libcuda.so` (CUDA Driver API): kernel launch calls / duration / grid / block / **shared-memory** (new in v0.10), graph launch, memory alloc / free (bytes + calls, **success-only since v0.9**), memory copies (incl. peer-to-peer), memset, stream / device / event sync durations, CUDA errors.
