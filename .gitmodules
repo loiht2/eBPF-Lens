@@ -1,3 +1,4 @@
 [submodule "obi-src"]
 	path = .obi-src
 	url = https://github.com/loiht2/eBPF-Lens-core.git
+	branch = feature/add-GPU-metrics
