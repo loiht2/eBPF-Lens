@@ -90,7 +90,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(\r\n  increase(gpu_cuda_kernel_launch_calls_total[$__range])\r\n)",
+          "expr": "sum(\r\n  increase(ebpf_cuda_kernel_launch_calls_total[$__range])\r\n)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -160,7 +160,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(increase(gpu_cuda_errors_total[$__range]))",
+          "expr": "sum(increase(ebpf_cuda_errors_total[$__range]))",
           "hide": false,
           "instant": false,
           "legendFormat": "__auto",
@@ -227,7 +227,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(increase(gpu_hami_oom_events_total[$__range]))",
+          "expr": "sum(increase(ebpf_hami_oom_events_total[$__range]))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -340,7 +340,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_name, k8s_pod_uid, gpu_uuid) (\r\n  rate(gpu_cuda_kernel_launch_calls_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
+          "expr": "sum by (k8s_pod_name, k8s_pod_uid, gpu_uuid) (\r\n  rate(ebpf_cuda_kernel_launch_calls_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
           "format": "time_series",
           "hide": false,
           "legendFormat": "{{k8s_pod_name}} - [{{gpu_uuid}}]",
@@ -442,7 +442,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_name, k8s_pod_uid, gpu_uuid) (\r\n  rate(gpu_cuda_graph_launch_calls_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
+          "expr": "sum by (k8s_pod_name, k8s_pod_uid, gpu_uuid) (\r\n  rate(ebpf_cuda_graph_launch_calls_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "{{k8s_pod_name}} - [{{gpu_uuid}}]",
@@ -540,7 +540,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_launch_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_kernel_launch_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
           "hide": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
@@ -552,7 +552,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_launch_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_kernel_launch_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -663,7 +663,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (rate(gpu_cuda_memory_allocations_bytes_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval]))",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (rate(ebpf_cuda_memory_allocations_bytes_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval]))",
           "legendFormat": "{{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
           "refId": "A"
@@ -763,7 +763,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (rate(gpu_cuda_memory_allocations_calls_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval]))",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (rate(ebpf_cuda_memory_allocations_calls_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -861,7 +861,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n  rate(gpu_cuda_memory_allocations_bytes_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)\r\n/\r\nclamp_min(\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n    rate(gpu_cuda_memory_allocations_calls_total{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  ),\r\n  1\r\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n  rate(ebpf_cuda_memory_allocations_bytes_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)\r\n/\r\nclamp_min(\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n    rate(ebpf_cuda_memory_allocations_calls_total{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  ),\r\n  1\r\n)",
           "legendFormat": "{{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
           "refId": "A"
@@ -961,7 +961,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_memcpy_kind) (\r\n  rate(gpu_cuda_memory_copies_bytes_total_sum{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",\r\n    cuda_memcpy_kind=~\"MemcpyDeviceToHost\"\r\n  }[$__rate_interval])\r\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_memcpy_kind) (\r\n  rate(ebpf_cuda_memory_copies_bytes_total_sum{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",\r\n    cuda_memcpy_kind=~\"MemcpyDeviceToHost\"\r\n  }[$__rate_interval])\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "Device to Host | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -974,7 +974,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_memcpy_kind) (\r\n  rate(gpu_cuda_memory_copies_bytes_total_sum{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",\r\n    cuda_memcpy_kind=~\"MemcpyHostToDevice\"\r\n  }[$__rate_interval])\r\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_memcpy_kind) (\r\n  rate(ebpf_cuda_memory_copies_bytes_total_sum{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",\r\n    cuda_memcpy_kind=~\"MemcpyHostToDevice\"\r\n  }[$__rate_interval])\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "HostToDevice | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -987,7 +987,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_memcpy_kind) (\n  rate(gpu_cuda_memory_copies_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",cuda_memcpy_kind=\"MemcpyDeviceToDevice\"}[$__rate_interval])\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_memcpy_kind) (\n  rate(ebpf_cuda_memory_copies_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",cuda_memcpy_kind=\"MemcpyDeviceToDevice\"}[$__rate_interval])\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "DeviceToDevice | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -1085,7 +1085,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n  rate(gpu_cuda_memory_frees_bytes_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n  rate(ebpf_cuda_memory_frees_bytes_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
           "legendFormat": "{{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
           "refId": "A"
@@ -1182,7 +1182,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n  rate(gpu_cuda_memory_frees_calls_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid) (\r\n  rate(ebpf_cuda_memory_frees_calls_total{\r\n    k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n  }[$__rate_interval])\r\n)",
           "legendFormat": "{{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
           "refId": "A"
@@ -1282,7 +1282,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_name, gpu_uuid) (rate(gpu_cuda_memory_memset_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",cuda_memset_async=\"false\"}[$__rate_interval]))",
+          "expr": "sum by (k8s_pod_name, gpu_uuid) (rate(ebpf_cuda_memory_memset_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",cuda_memset_async=\"false\"}[$__rate_interval]))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -1296,7 +1296,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_name, gpu_uuid) (rate(gpu_cuda_memory_memset_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",cuda_memset_async=\"true\"}[$__rate_interval]))",
+          "expr": "sum by (k8s_pod_name, gpu_uuid) (rate(ebpf_cuda_memory_memset_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\",cuda_memset_async=\"true\"}[$__rate_interval]))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -1399,7 +1399,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_name, gpu_uuid) (rate(gpu_cuda_memory_peer_copies_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval]))",
+          "expr": "sum by (k8s_pod_name, gpu_uuid) (rate(ebpf_cuda_memory_peer_copies_bytes_total_sum{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval]))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -1515,7 +1515,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_function, cuda_error_code) (\n  increase(gpu_cuda_errors_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval])\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_function, cuda_error_code) (\n  increase(ebpf_cuda_errors_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval])\n)",
           "hide": false,
           "instant": false,
           "legendFormat": " {{k8s_pod_uid}} | {{gpu_uuid}} | {{cuda_function}} | rc={{cuda_error_code}}",
@@ -1613,7 +1613,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_function, hami_oom_mem_kind, hami_oom_error_code) (\n  increase(gpu_hami_oom_events_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval])\n)",
+          "expr": "sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_function, hami_oom_mem_kind, hami_oom_error_code) (\n  increase(ebpf_hami_oom_events_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}[$__rate_interval])\n)",
           "hide": false,
           "legendFormat": "{{k8s_pod_name}} | {{gpu_uuid}} | {{cuda_function}} | {{hami_oom_mem_kind}} | rc={{hami_oom_error_code}}",
           "range": true,
@@ -1733,7 +1733,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max_over_time(\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_function, hami_oom_mem_kind, hami_oom_error_code) (\n    gpu_hami_oom_events_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}\n  )[$__range:]\n)",
+          "expr": "max_over_time(\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, cuda_function, hami_oom_mem_kind, hami_oom_error_code) (\n    ebpf_hami_oom_events_total{k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"}\n  )[$__range:]\n)",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -1861,7 +1861,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, le) (\r\n    rate(gpu_hami_compute_throttle_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, le) (\r\n    rate(ebpf_hami_compute_throttle_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -1874,7 +1874,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, le) (\r\n    rate(gpu_hami_compute_throttle_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid, le) (\r\n    rate(ebpf_hami_compute_throttle_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -1985,7 +1985,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_stream_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_stream_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
           "hide": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
@@ -1997,7 +1997,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_stream_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_stream_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -2095,7 +2095,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_device_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_device_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
           "hide": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
@@ -2107,7 +2107,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_device_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_device_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -2205,7 +2205,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_event_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_event_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
           "hide": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
@@ -2217,7 +2217,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_event_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_event_sync_duration_seconds_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -2246,7 +2246,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Distribution of grid size (gridX*gridY*gridZ = total CUDA blocks) per kernel launch. P95/P99 reveal the largest kernels scheduled. Source: gpu_cuda_kernel_grid_size_total (Prometheus histogram).",
+      "description": "Distribution of grid size (gridX*gridY*gridZ = total CUDA blocks) per kernel launch. P95/P99 reveal the largest kernels scheduled. Source: ebpf_cuda_kernel_grid_size_total (Prometheus histogram).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2328,7 +2328,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_grid_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_kernel_grid_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
           "hide": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
@@ -2340,7 +2340,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_grid_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_kernel_grid_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -2356,7 +2356,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Distribution of block size (blockX*blockY*blockZ = threads per block) per kernel launch. Source: gpu_cuda_kernel_block_size_total (Prometheus histogram).",
+      "description": "Distribution of block size (blockX*blockY*blockZ = threads per block) per kernel launch. Source: ebpf_cuda_kernel_block_size_total (Prometheus histogram).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2438,7 +2438,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_block_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
+          "expr": "histogram_quantile(\r\n  0.95,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_kernel_block_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n) ",
           "hide": false,
           "legendFormat": "P95 | {{k8s_pod_name}} [{{gpu_uuid}}]",
           "range": true,
@@ -2450,7 +2450,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(gpu_cuda_kernel_block_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
+          "expr": "histogram_quantile(\r\n  0.99,\r\n  sum by (k8s_pod_uid, k8s_pod_name, gpu_uuid,le) (\r\n    rate(ebpf_cuda_kernel_block_size_total_bucket{\r\n      k8s_pod_uid=~\"$pod_uid\",k8s_pod_name=~\"$pod\",gpu_uuid=~\"$gpu_uuid\"\r\n    }[$__rate_interval])\r\n  )\r\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "P99 | {{k8s_pod_name}} [{{gpu_uuid}}]",
@@ -2473,14 +2473,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values(gpu_cuda_kernel_launch_calls_total,k8s_pod_uid)",
+        "definition": "label_values(ebpf_cuda_kernel_launch_calls_total,k8s_pod_uid)",
         "includeAll": true,
         "multi": true,
         "name": "pod_uid",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(gpu_cuda_kernel_launch_calls_total,k8s_pod_uid)",
+          "query": "label_values(ebpf_cuda_kernel_launch_calls_total,k8s_pod_uid)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -2493,14 +2493,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values(gpu_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},k8s_pod_name)",
+        "definition": "label_values(ebpf_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},k8s_pod_name)",
         "includeAll": true,
         "multi": true,
         "name": "pod",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(gpu_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},k8s_pod_name)",
+          "query": "label_values(ebpf_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},k8s_pod_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -2513,14 +2513,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values(gpu_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},gpu_uuid)",
+        "definition": "label_values(ebpf_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},gpu_uuid)",
         "includeAll": true,
         "multi": true,
         "name": "gpu_uuid",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(gpu_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},gpu_uuid)",
+          "query": "label_values(ebpf_cuda_kernel_launch_calls_total{k8s_pod_uid=~\"$pod_uid\"},gpu_uuid)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
