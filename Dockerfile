@@ -22,6 +22,10 @@ RUN apk add make git bash
 
 # Copy the go manifests and source
 COPY .git/ .git/
+# The OBI source itself. `make generate` builds the eBPF objects from it, and the
+# vendored tree carries the //go:embed Go files but not the .o files they embed, so
+# the build cannot proceed from vendor/ alone.
+COPY .obi-src/ .obi-src/
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 COPY vendor/ vendor/

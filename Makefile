@@ -110,8 +110,12 @@ ENVTEST_K8S_VERSION = 1.30.0
 
 .PHONY: obi-submodule
 obi-submodule:
-	@echo "# Updating OBI Git submodule..."
-	git submodule update --init --recursive
+	@if [ -f $(OBI_MODULE)/go.mod ]; then \
+		echo "# OBI source already present, skipping submodule update"; \
+	else \
+		echo "# Updating OBI Git submodule..."; \
+		git submodule update --init --recursive; \
+	fi
 
 .PHONY: install-hooks
 install-hooks:
